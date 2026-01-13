@@ -2,10 +2,10 @@ gradio_litmodel3d
 ninja
 pybind11
 
-diffusers
+diffusers==0.36.0
 einops
 opencv-python
-numpy
+numpy<2
 torch
 transformers==4.49.0
 torchvision
@@ -13,7 +13,7 @@ torchvision
 #ConfigArgParse
 #ipdb
 omegaconf
-diso
+#diso
 #sentencepiece
 tqdm
 
@@ -26,7 +26,7 @@ xatlas
 #facexlib
 
 # Training
-accelerate
+accelerate>=0.28.0
 #pytorch_lightning
 #scikit-learn
 #scikit-image
@@ -42,3 +42,4 @@ onnxruntime
 #gevent
 #geventhttpclient
 pydantic==2.10.6
+peft>=0.17.0
