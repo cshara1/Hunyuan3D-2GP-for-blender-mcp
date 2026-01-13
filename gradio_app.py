@@ -749,6 +749,7 @@ if __name__ == '__main__':
     parser.add_argument('--turbo', action='store_true')
     parser.add_argument('--mv', action='store_true')
     parser.add_argument('--h2', action='store_true')
+    parser.add_argument('--share', action='store_true', help='Create a public Gradio share link')
 
 
     args = parser.parse_args()
@@ -888,5 +889,12 @@ if __name__ == '__main__':
     if args.low_vram_mode:
         torch.cuda.empty_cache()
     demo = build_app()
-    app = gr.mount_gradio_app(app, demo, path="/")
-    uvicorn.run(app, host=args.host, port=args.port, workers=1)
+    
+    if args.share:
+        # Launch with Gradio share link
+        print("Starting with Gradio share link...")
+        demo.launch(share=True, server_name=args.host, server_port=args.port)
+    else:
+        # Launch via uvicorn (standard mode)
+        app = gr.mount_gradio_app(app, demo, path="/")
+        uvicorn.run(app, host=args.host, port=args.port, workers=1)
