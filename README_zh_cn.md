@@ -1,6 +1,21 @@
 [Read in English](README.md)
 [日本語で読む](README_ja_jp.md)
 
+## 🔌 Blender MCP 集成
+`api_server.py` 已更新，支持与 [blender-mcp](https://github.com/deepbeepmeep/blender-mcp) 无缝集成。这使得您可以使用模型上下文协议 (Model Context Protocol) 直接从 Blender 中触发 3D 生成。
+
+### API 服务器参数
+- `--host`: 运行服务器的主机地址 (默认: 127.0.0.1)
+- `--port`: 运行服务器的端口 (默认: 8081)
+- `--share`: 公开服务器 (默认: False)
+- `--auth-user`: 认证用户名 (默认: None)
+- `--auth-pass`: 认证密码 (默认: None)
+
+### 如何运行 API 服务器
+```bash
+python api_server.py --share --auth-user auth --auth-pass pass --enable_t23d --enable_tex
+```
+
 <p align="center">
   <img src="./assets/images/teaser.jpg">
 

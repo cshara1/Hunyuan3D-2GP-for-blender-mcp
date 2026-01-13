@@ -1,6 +1,22 @@
 [中文阅读](README_zh_cn.md)
 [日本語で読む](README_ja_jp.md)
 
+## 🔌 Blender MCP Integration
+The `api_server.py` has been updated for seamless integration with [blender-mcp](https://github.com/deepbeepmeep/blender-mcp). This allows you to trigger 3D generation directly from Blender using the Model Context Protocol.
+
+### API Server Parameters
+- `--host`: Host to run the server on (default: 127.0.0.1)
+- `--port`: Port to run the server on (default: 8081)
+- `--share`: Share the server with the world (default: False)
+- `--auth-user`: Authentication username (default: None)
+- `--auth-pass`: Authentication password (default: None)
+
+### How to run the API server
+```bash
+python api_server.py --share --auth-user auth --auth-pass pass --enable_t23d --enable_tex
+```
+
+
 # Hunyuan3D-2GP: 3D Generation for the GPU Poor
 *GPU Poor version by **DeepBeepMeep**. This great video generator can now run smoothly with less than 6 GB of VRAM.*
 <BR>
@@ -151,7 +167,7 @@ The numerical results indicate that Hunyuan3D 2.0 surpasses all baselines in the
 and the condition following ability.
 
 | Model                   | CMMD(⬇)   | FID_CLIP(⬇) | FID(⬇)      | CLIP-score(⬆) |
-|-------------------------|-----------|-------------|-------------|---------------|
+| ----------------------- | --------- | ----------- | ----------- | ------------- |
 | Top Open-source Model1  | 3.591     | 54.639      | 289.287     | 0.787         |
 | Top Close-source Model1 | 3.600     | 55.866      | 305.922     | 0.779         |
 | Top Close-source Model2 | 3.368     | 49.744      | 294.628     | 0.806         |
@@ -171,7 +187,7 @@ It takes 6 GB VRAM for shape generation and 24.5 GB for shape and texture genera
 Hunyuan3D-2mini Series
 
 | Model                       | Description                   | Date       | Size | Huggingface                                                                                      |
-|-----------------------------|-------------------------------|------------|------|--------------------------------------------------------------------------------------------------|
+| --------------------------- | ----------------------------- | ---------- | ---- | ------------------------------------------------------------------------------------------------ |
 | Hunyuan3D-DiT-v2-mini-Turbo | Step Distillation Version     | 2025-03-19 | 0.6B | [Download](https://huggingface.co/tencent/Hunyuan3D-2mini/tree/main/hunyuan3d-dit-v2-mini-turbo) |
 | Hunyuan3D-DiT-v2-mini-Fast  | Guidance Distillation Version | 2025-03-18 | 0.6B | [Download](https://huggingface.co/tencent/Hunyuan3D-2mini/tree/main/hunyuan3d-dit-v2-mini-fast)  |
 | Hunyuan3D-DiT-v2-mini       | Mini Image to Shape Model     | 2025-03-18 | 0.6B | [Download](https://huggingface.co/tencent/Hunyuan3D-2mini/tree/main/hunyuan3d-dit-v2-mini)       |
@@ -180,7 +196,7 @@ Hunyuan3D-2mini Series
 Hunyuan3D-2mv Series
 
 | Model                     | Description                    | Date       | Size | Huggingface                                                                                  |
-|---------------------------|--------------------------------|------------|------|----------------------------------------------------------------------------------------------| 
+| ------------------------- | ------------------------------ | ---------- | ---- | -------------------------------------------------------------------------------------------- |
 | Hunyuan3D-DiT-v2-mv-Turbo | Step Distillation Version      | 2025-03-19 | 1.1B | [Download](https://huggingface.co/tencent/Hunyuan3D-2mv/tree/main/hunyuan3d-dit-v2-mv-turbo) |
 | Hunyuan3D-DiT-v2-mv-Fast  | Guidance Distillation Version  | 2025-03-18 | 1.1B | [Download](https://huggingface.co/tencent/Hunyuan3D-2mv/tree/main/hunyuan3d-dit-v2-mv-fast)  |
 | Hunyuan3D-DiT-v2-mv       | Multiview Image to Shape Model | 2025-03-18 | 1.1B | [Download](https://huggingface.co/tencent/Hunyuan3D-2mv/tree/main/hunyuan3d-dit-v2-mv)       |
@@ -188,12 +204,12 @@ Hunyuan3D-2mv Series
 Hunyuan3D-2 Series
 
 | Model                    | Description                 | Date       | Size | Huggingface                                                                               |
-|--------------------------|-----------------------------|------------|------|-------------------------------------------------------------------------------------------| 
+| ------------------------ | --------------------------- | ---------- | ---- | ----------------------------------------------------------------------------------------- |
 | Hunyuan3D-DiT-v2-0-Turbo | Step Distillation Model     | 2025-03-19 | 1.1B | [Download](https://huggingface.co/tencent/Hunyuan3D-2/tree/main/hunyuan3d-dit-v2-0-turbo) |
 | Hunyuan3D-DiT-v2-0-Fast  | Guidance Distillation Model | 2025-02-03 | 1.1B | [Download](https://huggingface.co/tencent/Hunyuan3D-2/tree/main/hunyuan3d-dit-v2-0-fast)  |
 | Hunyuan3D-DiT-v2-0       | Image to Shape Model        | 2025-01-21 | 1.1B | [Download](https://huggingface.co/tencent/Hunyuan3D-2/tree/main/hunyuan3d-dit-v2-0)       |
 | Hunyuan3D-Paint-v2-0     | Texture Generation Model    | 2025-01-21 | 1.3B | [Download](https://huggingface.co/tencent/Hunyuan3D-2/tree/main/hunyuan3d-paint-v2-0)     |
-| Hunyuan3D-Delight-v2-0   | Image Delight Model         | 2025-01-21 | 1.3B | [Download](https://huggingface.co/tencent/Hunyuan3D-2/tree/main/hunyuan3d-delight-v2-0)   | 
+| Hunyuan3D-Delight-v2-0   | Image Delight Model         | 2025-01-21 | 1.3B | [Download](https://huggingface.co/tencent/Hunyuan3D-2/tree/main/hunyuan3d-delight-v2-0)   |
 
 ## 🤗 Get Started with Hunyuan3D 2.0
 
