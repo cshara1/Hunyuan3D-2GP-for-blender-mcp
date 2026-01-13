@@ -41,7 +41,7 @@ import trimesh
 import uvicorn
 from PIL import Image
 import gradio as gr
-from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi import FastAPI, Request, Depends, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -307,9 +307,22 @@ class ModelWorker:
         # Initialize Texture Generation Pipeline
         if enable_tex:
             try:
+                # Pre-download models to debug potentially masked errors in hy3dgen
+                import huggingface_hub
+                logger.info(f"Pre-downloading texture models from {tex_model_path}...")
+                huggingface_hub.snapshot_download(repo_id=tex_model_path, allow_patterns=["hunyuan3d-delight-v2-0/*"])
+                huggingface_hub.snapshot_download(repo_id=tex_model_path, allow_patterns=["hunyuan3d-paint-v2-0/*"])
+                logger.info("Texture models pre-downloaded successfully.")
+                
                 self.pipeline_tex = Hunyuan3DPaintPipeline.from_pretrained(tex_model_path)
+                
+                # Manual CUDA Migration for Texture Pipeline
+                # Manual CUDA Migration for Texture Pipeline logic removed in favor of mmgp.offload
+                # if self.device == "cuda" and torch.cuda.is_available(): ...
             except Exception as e:
                 logger.error(f"Failed to load Texture Generation model: {e}")
+                import traceback
+                traceback.print_exc()
                 self.has_texturegen = False
 
         # Helper Workers
@@ -432,18 +445,21 @@ app.add_middleware(
 # --- API Routes ---
 
 @app.post("/generate", dependencies=[Depends(check_auth)])
-async def generate_api(request: Request):
+async def generate_api(request: Request, background_tasks: BackgroundTasks):
     logger.info("API: Generate Request Received")
     params = await request.json()
     uid = uuid.uuid4()
+    
     try:
-        # Map API params to internal params if needed
-        # (Assuming client sends correct keys: image/text, texture, etc.)
-        file_path, uid, mesh, img = worker.generate(uid, params)
-        return FileResponse(file_path)
-    except ValueError as e:
-        traceback.print_exc()
-        return JSONResponse({"error": str(e)}, status_code=400)
+        # Offload blocking generation to background task
+        # We wrap worker.generate to catch exceptions if needed, but worker catches internal errors usually.
+        # But worker.generate returns values which we discard here (results are saved to disk).
+        background_tasks.add_task(worker.generate, uid, params)
+        
+        # Return Job ID immediately to prevent timeout
+        logger.info(f"API: Job {uid} started in background")
+        return JSONResponse({"job_id": str(uid), "status": "RUN"}, status_code=200)
+        
     except Exception as e:
         traceback.print_exc()
         return JSONResponse({"error": "Internal Server Error"}, status_code=500)
@@ -657,6 +673,8 @@ if __name__ == "__main__":
     parser.add_argument('--auth-user', type=str, help="Username for authentication")
     parser.add_argument('--auth-pass', type=str, help="Password for authentication")
     parser.add_argument('--cache-path', type=str, default='gradio_cache')
+    parser.add_argument('--profile', type=str, default="3", help="Offload profile (1-4). Default 3 (Balanced).")
+    parser.add_argument('--verbose', type=str, default="1", help="Verbose level for offloading.")
     args = parser.parse_args()
 
     # Apply Turbo defaults if needed
@@ -685,6 +703,37 @@ if __name__ == "__main__":
         enable_t23d=args.enable_t23d
     )
 
+    # --- MMGP Profile Offloading ---
+    try:
+        profile = int(args.profile)
+        kwargs = {}
+        
+        # Monkeypatch _execution_device for mmgp compatibility if needed
+        replace_property_getter(worker.pipeline, "_execution_device", lambda self: "cuda")
+        
+        pipe = offload.extract_models("i23d_worker", worker.pipeline)
+        
+        if worker.has_texturegen:
+            pipe.update(offload.extract_models("texgen_worker", worker.pipeline_tex))
+            # Enable slicing for VAE in texture gen (copied from gradio_app.py)
+            worker.pipeline_tex.models["multiview_model"].pipeline.vae.use_slicing = True
+            
+        if worker.has_t2i:
+            pipe.update(offload.extract_models("t2i_worker", worker.pipeline_t2i))
+            
+        if profile < 5:
+            kwargs["pinnedMemory"] = "i23d_worker/model"
+        if profile != 1 and profile != 3:
+            kwargs["budgets"] = { "*": 2200 }
+            
+        offload.default_verboseLevel = verboseLevel = int(args.verbose)
+        logger.info(f"Applying mmgp offload profile: {profile}")
+        offload.profile(pipe, profile_no=profile, verboseLevel=int(args.verbose), **kwargs)
+        
+    except Exception as e:
+        logger.error(f"Failed to apply mmgp offloading: {e}")
+        traceback.print_exc()
+
     # Build Gradio UI
     demo = build_gradio_app(worker, args)
 
@@ -696,101 +745,29 @@ if __name__ == "__main__":
     # Launch Strategy
     if args.share:
         logger.info("Launching in SHARE mode. API endpoints will only be available on the local forwarded port if supported by Gradio tunnel.")
-        # When sharing, we rely on Gradio's internal server or we mount FastAPI and let Gradio launch it.
-        # gr.mount_gradio_app creates a hybrid app.
-        # But demo.launch(share=True) is needed for the link.
-        
-        # NOTE: demo.launch() starts a server. If we want OUR FastAPI endpoints (`/generate`) to be part of that server,
-        # we can't easily do it because demo.launch() controls the Starlette app creation typically.
-        # BUT, standard practice for sharing a Custom API + UI is tricky with just `launch(share=True)`.
-        # However, for the user's specific request "api_serverをベースに変えて" + "gradioのshare",
-        # the priority is likely the UI sharing.
-        
-        # We will attempt to run the standard uvicorn server for API stability,
-        # AND launch the interface in share mode mostly for UI access.
-        # BUT they can't bind to the same port.
-        
-        # Alternative: Gradio's `queue()` and mount. 
-        # Actually, let's just use `demo.launch(share=True)` and ACCEPT that custom API routes might not be on the SHARED link.
-        # The API routes will still exist on the `app` instance if we run it via uvicorn.
-        
-        # COMPROMISE:
-        # 1. Mount Gradio on App.
-        # 2. Run Uvicorn (Host API locally).
-        # 3. IF share is requested, we might need a separate tunnel or use `demo.launch` INSTEAD of uvicorn?
-        # User said "api_serverをベース" -> Keep API functionality primary.
-        
-        # Let's try to have our cake and eat it too:
-        # We will mostly use the structure of `gradio_app.py`'s launch but with `mount_gradio_app` logic for non-share.
-        
         print("!"*80)
         print("WARNING: --share mode is active. The Gradio UI will be publicly accessible.")
-        print("The custom API endpoints (/generate) are NOT automatically exposed via the Gradio share link.")
-        print("They are available at http://localhost:{port}/generate")
+        print("The custom API endpoints (/generate) are enabled locally.")
         print("!"*80)
 
-        # To get share link, we must use demo.launch().
-        # We can try to share the `app` (FastAPI) by passing it as `app_kwargs`? No.
+        # Launch Gradio with prevent_thread_lock=True to allow us to attach routes
+        _, _, shared_url = demo.launch(
+            share=True, 
+            auth=gradio_auth, 
+            server_name=args.host, 
+            server_port=args.port, 
+            allowed_paths=[os.path.abspath(SAVE_DIR)],
+            prevent_thread_lock=True
+        )
         
-        # We will just launch the demo independently for the share link if requested, 
-        # OR just use uvicorn and tell user to use ngrok for API sharing.
-        # Given the prompt, I will implement the standard `demo.launch(share=True)` path for the share flag,
-        # implying that in this mode, the script acts primarily as a UI server.
-        # BUT, to keep API working for Blender (locally), we can run the API server on a background thread?
-        # No, that's messy.
+        # Attach our custom API endpoint to Gradio's internal FastAPI app
+        # This makes /generate available on the port Gradio is running on (e.g. 8081)
+        demo.app.include_router(app.router)
+        logger.info("Custom API endpoints attached to Gradio server.")
+        logger.info(f"Public Share URL: {shared_url}")
         
-        # Simplest valid solution:
-        # If --share: Launch Gradio (which includes UI logic).
-        # But wait, the Blender Addon needs `/generate`. `demo.launch` does NOT provide `/generate`.
-        # So `demo.launch` is INCOMPATIBLE with `api_server` functionality unless `demo` can mount custom routes.
-        
-        # SOLUTION: We will use `gr.mount_gradio_app` and `uvicorn` as the ROBUST method.
-        # For sharing, checking the `gradio` docs/experience: `share=True` is an argument for `launch()`.
-        # It calls `networking.setup_tunnel`.
-        # We can theoretically manually call `setup_tunnel`? Too complex/unstable.
-        
-        # I will implement the separate paths.
-        if args.share:
-             # If share is ON, we assume the user wants the UI shared.
-             # We will launch via demo.launch(share=True).
-             # To KEEP API working locally, we can attach the FastAPI app to the demo??
-             # `demo` IS a FastAPI app (internally blocks).
-             # No, `blocks` is not an app.
-             
-             # Let's go with the merged app + uvicorn for standard usage.
-             # For share usage, we just fall back to `demo.launch(share=True)` and accept API loss on the shared link.
-             # (Blender can still connect to localhost if we launch on a specific port? 
-             #  Yes, demo.launch(server_port=8081) will listen on 8081. 
-             #  Does it support custom routes? NO.)
-             
-             # WAIT! We can pass `app` to `mount_gradio_app`.
-             app = gr.mount_gradio_app(app, demo, path="/", auth=gradio_auth)
-             # Then we run uvicorn.
-             # AND we can print "To share, use ngrok or similar on this port".
-             # OR... `gradio_app.py` in the original rep had `demo.launch(share=True)`.
-             # The user specifically asked for "gradioのshare機能を入れて".
-             
-             # Best Effort:
-             # Just use `demo.launch(share=True)` and try to attach routes? 
-             # `demo` does not expose a way to attach routes.
-             
-             # Revert to: 
-             # If share is requested: Use `demo.launch(share=True)`.
-             # Warn that this disables the custom API endpoints required for Blender Addon.
-             # (Actually, maybe the user just wants to share the UI with colleagues and doesn't care about Blender at that moment).
-             pass
-        
-        # Final Decision: 
-        # Support both methods via flag.
-        if args.share:
-            # Launch pure Gradio with Share. API endpoints from `app` above are IGNORED.
-            # This satisfies "enable share" but sacrifices "api_server integration" momentarily for that run.
-            demo.launch(share=True, auth=gradio_auth, server_name=args.host, server_port=args.port, allowed_paths=[os.path.abspath(SAVE_DIR)])
-        else:
-            # Launch robust FastAPI server (API + UI local).
-            app = gr.mount_gradio_app(app, demo, path="/", auth=gradio_auth, allowed_paths=[os.path.abspath(SAVE_DIR)])
-            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-
+        # Keep the main thread alive
+        demo.block_thread()
     else:
         # Default behavior: Unified Server
         app = gr.mount_gradio_app(app, demo, path="/", auth=gradio_auth, allowed_paths=[os.path.abspath(SAVE_DIR)])
