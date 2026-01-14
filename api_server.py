@@ -275,12 +275,14 @@ class ModelWorker:
                  enable_tex=False,
                  enable_t23d=False):
         self.model_path = model_path
-        self.worker_id = worker_id
         self.device = device
+        self.mv_mode = '2mv' in model_path or 'mv' in model_path.lower()
+        if self.mv_mode:
+            logger.info("Multi-view mode detected for Shape Generation.")
         self.has_texturegen = enable_tex
         self.has_t2i = enable_t23d
         
-        logger.info(f"Loading the model {model_path} on worker {worker_id} ...")
+        logger.info(f"Loading the model {model_path} on device {device} ...")
 
         self.rembg = BackgroundRemover()
         
@@ -334,21 +336,48 @@ class ModelWorker:
         # Placeholder for semaphore usage if needed
         return 0
 
-    @torch.inference_mode()
     def generate(self, uid, params):
+        logger.info(f"Worker.generate: Job {uid}, MV Mode: {self.mv_mode}")
         # --- Preprocessing (Image / Text) ---
-        if 'image' in params:
-            image = params["image"]
-            if isinstance(image, str): # Base64 string
-                image = load_image_from_base64(image)
+        if self.mv_mode:
+            # Multi-view expects a dictionary
+            image_dict = {}
+            if 'image' in params:
+                img = params["image"]
+                image_dict['front'] = load_image_from_base64(img) if isinstance(img, str) else img
+            
+            # Support other views if provided in params
+            for view in ['back', 'left', 'right']:
+                key = f'image_{view}'
+                if key in params:
+                    img = params[key]
+                    image_dict[view] = load_image_from_base64(img) if isinstance(img, str) else img
+            
+            if not image_dict:
+                 # Fallback to T2I if no image provided and T2I is enabled
+                 if 'text' in params and self.has_t2i:
+                    text = params["text"]
+                    image_dict['front'] = self.pipeline_t2i(text)
+                 else:
+                    raise ValueError("No input image or text provided for MV mode")
+            
+            # Apply background removal to all views
+            for k, v in image_dict.items():
+                image_dict[k] = self.rembg(v)
+            image = image_dict
         else:
-            if 'text' in params and self.has_t2i:
-                text = params["text"]
-                image = self.pipeline_t2i(text)
+            if 'image' in params:
+                image = params["image"]
+                if isinstance(image, str): # Base64 string
+                    image = load_image_from_base64(image)
             else:
-                raise ValueError("No input image or text provided")
+                if 'text' in params and self.has_t2i:
+                    text = params["text"]
+                    image = self.pipeline_t2i(text)
+                else:
+                    raise ValueError("No input image or text provided")
 
-        image = self.rembg(image)
+            image = self.rembg(image)
         # Note: params are modified in-place to include the PIL image for texture generation later
         
         # --- Shape Generation ---
@@ -384,7 +413,9 @@ class ModelWorker:
             mesh = self.floater_remove_worker(mesh)
             mesh = self.degenerate_face_remove_worker(mesh)
             mesh = self.face_reduce_worker(mesh, max_facenum=params.get('face_count', 20000)) # Default face count
-            mesh = self.pipeline_tex(mesh, image)
+            # For texture generation, we use the 'front' view as reference
+            tex_image = image['front'] if self.mv_mode else image
+            mesh = self.pipeline_tex(mesh, tex_image)
             logger.info("--- Texture Gen: %s seconds ---" % (time.time() - start_time))
 
         # --- Save ---
@@ -402,7 +433,9 @@ class ModelWorker:
             mesh.export(save_path)
 
         torch.cuda.empty_cache()
-        return save_path, uid, mesh, image
+        # For result, return the main image used
+        main_image = image['front'] if self.mv_mode else image
+        return save_path, uid, mesh, main_image
 
 # --- FastAPI App & Auth ---
 
