@@ -31,9 +31,8 @@ class HunyuanDiTPipeline:
     def __init__(
         self,
         model_path="Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled",
-        device='cpu'
+        device='cuda'
     ):
-        torch.set_default_device('cpu')
         self.device = device
         self.pipe = AutoPipelineForText2Image.from_pretrained(
             model_path,
@@ -41,6 +40,12 @@ class HunyuanDiTPipeline:
             enable_pag=True,
             pag_applied_layers=["blocks.(16|17|18|19)"]
         ).to(self.device)
+        
+        # Ensure all text encoders are on the same device to avoid device mismatch errors
+        if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
+            self.pipe.text_encoder = self.pipe.text_encoder.to(self.device)
+        if hasattr(self.pipe, 'text_encoder_2') and self.pipe.text_encoder_2 is not None:
+            self.pipe.text_encoder_2 = self.pipe.text_encoder_2.to(self.device)
         
         self.pos_txt = ",白色背景,3D风格,最佳质量"
         self.neg_txt = "文本,特写,裁剪,出框,最差质量,低质量,JPEG伪影,PGLY,重复,病态," \

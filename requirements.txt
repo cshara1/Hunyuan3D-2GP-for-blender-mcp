@@ -1,4 +1,4 @@
-gradio_litmodel3d
+# gradio_litmodel3d
 ninja
 pybind11
 
@@ -32,7 +32,7 @@ accelerate>=0.28.0
 #scikit-image
 
 # Demo only
-gradio
+gradio==3.50.2
 uvicorn
 fastapi
 mmgp==3.2.7

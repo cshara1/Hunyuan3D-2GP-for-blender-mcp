@@ -560,6 +560,8 @@ def build_gradio_app(worker, args):
              pass
         else:
             if image is not None:
+                if isinstance(image, str):
+                    image = Image.open(image).convert("RGBA")
                 params["image"] = image
             elif caption and caption.strip():
                 if not worker.has_t2i:
@@ -604,6 +606,8 @@ def build_gradio_app(worker, args):
         }
         
         if image is not None:
+            if isinstance(image, str):
+                image = Image.open(image).convert("RGBA")
             params["image"] = image
         elif caption is not None:
              params["text"] = caption
@@ -634,7 +638,7 @@ def build_gradio_app(worker, args):
             with gr.Column(scale=3):
                 with gr.Tabs():
                     with gr.Tab('Image Prompt'):
-                        image = gr.Image(label='Image', type='pil', image_mode='RGBA', height=290)
+                        image = gr.Image(label='Image', type='filepath', image_mode='RGBA', height=290)
                     with gr.Tab('Text Prompt'):
                         caption = gr.Textbox(label='Text Prompt')
                 
