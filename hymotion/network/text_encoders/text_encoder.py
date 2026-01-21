@@ -152,7 +152,6 @@
                         device_map="auto",
                         low_cpu_mem_usage=True,
                         trust_remote_code=True,
-                        use_safetensors=False,  # Bypass safetensors version issue
                     )
                 elif quantization == "int8":
                     from transformers import BitsAndBytesConfig
@@ -170,7 +169,6 @@
                         device_map="auto",
                         low_cpu_mem_usage=True,
                         trust_remote_code=True,
-                        use_safetensors=False,  # Bypass safetensors version issue
                     )
                 else:  # quantization == "none"
                     # Manually load config
@@ -185,7 +183,6 @@
                         low_cpu_mem_usage=True,
                         torch_dtype=torch.bfloat16,
                         trust_remote_code=True,
-                        use_safetensors=False,  # Bypass safetensors version issue
                     )
                 
                 self.llm_text_encoder = self.llm_text_encoder.eval().requires_grad_(False)

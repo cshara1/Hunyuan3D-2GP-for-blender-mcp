@@ -283,7 +283,6 @@ class PromptRewriter:
                     device_map={"": "cpu"},
                     trust_remote_code=True,
                     low_cpu_mem_usage=True,
-                    use_safetensors=False,  # Bypass safetensors version issue
                 )
             else:
                 # Configure 4-bit quantization with CPU offloading for limited GPU memory
@@ -302,7 +301,6 @@ class PromptRewriter:
                     device_map="auto",
                     trust_remote_code=True,
                     low_cpu_mem_usage=True,
-                    use_safetensors=False,  # Bypass safetensors version issue
                 )
             
             self.model.eval()
