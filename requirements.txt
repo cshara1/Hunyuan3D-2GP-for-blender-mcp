@@ -1,14 +1,17 @@
+--extra-index-url https://gitlab.inria.fr/api/v4/projects/18692/packages/pypi/simple
 # gradio_litmodel3d
 ninja
 pybind11
+huggingface_hub==0.34.0
 
-diffusers==0.36.0
+diffusers==0.31.0
 einops
 opencv-python
-numpy<2
-torch
-transformers==4.49.0
-torchvision
+torch==2.9.1
+torchvision==0.24.1
+torchaudio==2.9.1
+transformers==4.57.6
+safetensors==0.5.3
 #taming-transformers-rom1504
 #ConfigArgParse
 #ipdb
@@ -26,17 +29,17 @@ xatlas
 #facexlib
 
 # Training
-accelerate>=0.28.0
+accelerate==0.33.0
 #pytorch_lightning
 #scikit-learn
 #scikit-image
+numpy>=1.24.0,<2.0
 
 # Demo only
 gradio==3.50.2
 uvicorn
 fastapi
-mmgp==3.2.7
-uvicorn
+
 rembg
 onnxruntime
 #gevent
@@ -47,8 +50,11 @@ peft>=0.17.0
 bitsandbytes>=0.48.2
 transforms3d==0.4.2
 torchdiffeq==0.2.5
-fbxsdkpy==2020.1.post2
 PyYAML==6.0
 openai
-requests
 scipy>=1.10.0
+fbxsdkpy==2020.1.post2
+urllib3<1.27,>=1.25.4
+gradio==3.50.2
+mmgp==3.2.7
+requests

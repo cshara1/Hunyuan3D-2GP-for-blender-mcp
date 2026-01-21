@@ -45,18 +45,18 @@ from fastapi import FastAPI, Request, Depends, HTTPException, status, Background
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from mmgp import offload
-from hymotion.utils.t2m_runtime import T2MRuntime
-import torch
 
-# --- Monkeypatch for hy3dgen compatibility ---
+# --- Monkeypatch for hy3dgen/mmgp compatibility (MUST be before mmgp import) ---
 import huggingface_hub
 if not hasattr(huggingface_hub, "cached_download"):
     # cached_download was removed in 0.26.0. 
-    # We map it to hf_hub_download which is the modern equivalent for HF files,
-    # or just warn if it fails.
+    # We map it to hf_hub_download which is the modern equivalent for HF files.
     print("Applying monkeypatch for huggingface_hub.cached_download...")
     huggingface_hub.cached_download = huggingface_hub.hf_hub_download
+
+from mmgp import offload
+# from hymotion.utils.t2m_runtime import T2MRuntime # Moved to __init__ to allow env var setup
+import torch
 
 from hy3dgen.rembg import BackgroundRemover
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline, FloaterRemover, DegenerateFaceRemover, FaceReducer, \
@@ -338,18 +338,42 @@ class ModelWorker:
         # Initialize Motion Generation Runtime
         self.enable_motion = enable_motion
         self.motion_runtime = None
+        self.motion_init_error = None
+        
         if self.enable_motion:
             try:
-                # Assume standard layout where HY-Motion-1.0 is a sibling directory
-                motion_config = "../HY-Motion-1.0/ckpts/tencent/HY-Motion-1.0-Lite/config.yml"
-                motion_ckpt = "../HY-Motion-1.0/ckpts/tencent/HY-Motion-1.0-Lite/latest.ckpt"
                 
-                if not os.path.exists(motion_config):
-                    # Fallback to local check if copied
-                    motion_config = "ckpts/tencent/HY-Motion-1.0-Lite/config.yml"
-                    motion_ckpt = "ckpts/tencent/HY-Motion-1.0-Lite/latest.ckpt"
+                # Define potential checkpoint paths (prioritized)
+                possible_paths = [
+                    # 1. Local path (relative to api_server.py) - Worked in user logs previously
+                    "ckpts/tencent/HY-Motion-1.0-Lite",
+                    # 2. Sibling directory path
+                    "../HY-Motion-1.0/ckpts/tencent/HY-Motion-1.0-Lite",
+                    # 3. Standard absolute path in container if applicable
+                    "/root/Hunyuan3D-2GP/ckpts/tencent/HY-Motion-1.0-Lite" 
+                ]
+                
+                motion_config = None
+                motion_ckpt = None
+                checked_paths = []
 
-                if os.path.exists(motion_config):
+                for base_path in possible_paths:
+                    cfg = os.path.join(base_path, "config.yml")
+                    ckpt = os.path.join(base_path, "latest.ckpt")
+                    checked_paths.append(cfg)
+                    
+                    if os.path.exists(cfg):
+                        motion_config = cfg
+                        motion_ckpt = ckpt
+                        break
+                
+                if not motion_config:
+                     msg = f"Motion checkpoints not found.\nChecked paths:\n" + "\n".join(checked_paths) + "\nPlease ensure 'config.yml' exists in one of these locations."
+                     logger.warning(msg)
+                     self.motion_init_error = msg
+                     self.enable_motion = False
+
+                if self.enable_motion and motion_config:
                     logger.info(f"Loading Motion Runtime from {motion_config}...")
                     # Ensure quantization is set default to int4 for memory efficiency
                     if "QWEN_QUANTIZATION" not in os.environ:
@@ -359,6 +383,7 @@ class ModelWorker:
                     disable_pe_env = os.environ.get("DISABLE_PROMPT_ENGINEERING", "False").lower() == "true"
                     prompt_model_path_env = os.environ.get("PROMPT_MODEL_PATH", None)
 
+                    from hymotion.utils.t2m_runtime import T2MRuntime
                     self.motion_runtime = T2MRuntime(
                         config_path=motion_config,
                         ckpt_name=motion_ckpt,
@@ -367,13 +392,11 @@ class ModelWorker:
                         prompt_engineering_model_path=prompt_model_path_env
                     )
                     logger.info("Motion Runtime initialized.")
-                else:
-                    logger.warning(f"Motion checkpoints not found at {motion_config}. Motion generation disabled.")
-                    self.enable_motion = False
             except Exception as e:
                 logger.error(f"Failed to load Motion Runtime: {e}")
                 import traceback
                 traceback.print_exc()
+                self.motion_init_error = f"Runtime init failed: {str(e)}"
                 self.enable_motion = False
 
     def get_queue_length(self):
@@ -483,7 +506,8 @@ class ModelWorker:
 
     def generate_motion(self, uid, params):
         if not self.enable_motion or not self.motion_runtime:
-             raise RuntimeError("Motion generation disabled")
+             reason = getattr(self, "motion_init_error", "Unknown reason (disabled by flag?)")
+             raise RuntimeError(f"Motion generation disabled. Reason: {reason}")
         
         logger.info(f"Worker.generate_motion: Job {uid}")
         text = params.get("text", "")
@@ -516,6 +540,9 @@ class ModelWorker:
 
     def rewrite_text(self, text, enable_rewrite=True, enable_duration=True):
         if not self.enable_motion or not self.motion_runtime:
+             reason = getattr(self, "motion_init_error", "Unknown reason (disabled by flag?)")
+             # Just return original text with warning in logs, or raise error? UI handles return tuple
+             logger.warning(f"Rewrite disabled. Reason: {reason}")
              return text, 5.0 # Default fallback
         
         try:
@@ -940,6 +967,10 @@ if __name__ == "__main__":
         os.environ["PROMPT_CPU_MODE"] = "true"
     if args.prompt_model_path:
         os.environ["PROMPT_MODEL_PATH"] = args.prompt_model_path
+        
+    # Default to using HF models for HY-Motion if not specified (since local ckpts are often empty)
+    if "USE_HF_MODELS" not in os.environ:
+        os.environ["USE_HF_MODELS"] = "1"
 
     logger.info(f"Starting server with args: {args}")
 
