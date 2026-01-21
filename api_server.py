@@ -506,15 +506,29 @@ class ModelWorker:
                 use_special_game_feat=False
             )
             
-            if fbx_files:
-                # fbx_files is a list of absolute paths
-                return fbx_files[0] 
-            return None
+            fbx_path = fbx_files[0] if fbx_files else None
+            return html, fbx_path
         except Exception as e:
             logger.error(f"Motion Generation Failed: {e}")
             import traceback
             traceback.print_exc()
             raise e
+
+    def rewrite_text(self, text, enable_rewrite=True, enable_duration=True):
+        if not self.enable_motion or not self.motion_runtime:
+             return text, 5.0 # Default fallback
+        
+        try:
+             # T2MRuntime.rewrite_text_and_infer_time might not be available if PromptRewriter is disabled
+             # But the method itself usually handles logic check or we check here
+             if not self.motion_runtime.prompt_rewriter:
+                  return text, 5.0
+             
+             pred_duration, rewritten = self.motion_runtime.rewrite_text_and_infer_time(text)
+             return rewritten, pred_duration
+        except Exception as e:
+             logger.error(f"Rewrite failed: {e}")
+             return text, 5.0
 
 # --- FastAPI App & Auth ---
 
@@ -599,13 +613,14 @@ async def generate_motion_endpoint(request: Request):
     try:
         loop = asyncio.get_event_loop()
         # Run in executor to avoid blocking main thread
-        result_path = await loop.run_in_executor(None, worker.generate_motion, uid, params)
+        result = await loop.run_in_executor(None, worker.generate_motion, uid, params)
+        html_content, result_path = result
         
         if result_path and os.path.exists(result_path):
              with open(result_path, 'rb') as f:
                  data = base64.b64encode(f.read()).decode()
              
-             return JSONResponse({"status": "completed", "result_path": result_path, "model_base64": data})
+             return JSONResponse({"status": "completed", "result_path": result_path, "model_base64": data, "html_viz": html_content})
         else:
              return JSONResponse({"status": "failed", "error": "No output generated"}, status_code=500)
 
@@ -735,6 +750,45 @@ def build_gradio_app(worker, args):
             traceback.print_exc()
             raise gr.Error(str(e))
 
+        except Exception as e:
+            traceback.print_exc()
+            raise gr.Error(str(e))
+
+    def ui_rewrite(text):
+        if not text: return "", 5.0
+        rewritten, duration = worker.rewrite_text(text)
+        return rewritten, duration
+
+    def ui_generate_motion(text, rewritten_text, duration, cfg, seed, randomize_seed):
+        seed = int(randomize_seed_fn(seed, randomize_seed))
+        prompt = rewritten_text if rewritten_text and rewritten_text.strip() else text
+        
+        params = {
+            "text": prompt,
+            "duration": duration,
+            "cfg_scale": cfg,
+            "seed": seed
+        }
+        
+        try:
+            uid = uuid.uuid4()
+            html_content, fbx_path = worker.generate_motion(uid, params)
+            
+            # iframe wrapping
+            if html_content:
+                escaped_html = html_content.replace('"', "&quot;")
+                iframe_html = f"""
+                    <iframe srcdoc="{escaped_html}" width="100%" height="750px" style="border: none; border-radius: 12px;"></iframe>
+                """
+            else:
+                iframe_html = "<p>No Visualization Available</p>"
+                
+            return iframe_html, fbx_path, seed
+            
+        except Exception as e:
+            traceback.print_exc()
+            raise gr.Error(str(e))
+
     # --- UI Layout ---
     
     with gr.Blocks(theme=gr.themes.Base(), title='Hunyuan-3D-2.0 Unified Server') as demo:
@@ -794,6 +848,54 @@ def build_gradio_app(worker, args):
             ui_generation_all,
             inputs=[caption, image, mv_f, mv_b, mv_l, mv_r, steps, guidance, seed, octree, rembg, chunks, randomize_seed],
             outputs=[file_out, file_out2, html_gen_mesh, stats, seed]
+        )
+
+        # --- HY-Motion UI Section ---
+        gr.Markdown("---")
+        gr.Markdown("# HY-Motion Generation")
+        
+        with gr.Row():
+            with gr.Column(scale=2):
+                motion_input = gr.Textbox(
+                    label="📝 Motion Input Text", 
+                    placeholder="Enter text to generate motion (e.g. 'A person walking forward')"
+                )
+                
+                with gr.Row():
+                     motion_rewrite_btn = gr.Button("🔄 Rewrite Text", variant="secondary")
+                
+                motion_rewritten = gr.Textbox(
+                    label="✏️ Rewritten Text", 
+                    interactive=True,
+                    placeholder="Rewritten text will appear here. You can edit it manually."
+                )
+                
+                motion_gen_btn = gr.Button("🚀 Generate Motion", variant="primary")
+                
+                with gr.Accordion("Motion Advanced Options", open=False):
+                    motion_duration = gr.Slider(0.5, 12.0, value=5.0, step=0.1, label="Duration (s)")
+                    motion_cfg = gr.Number(value=7.5, label="Guidance Scale")
+                    motion_seed = gr.Number(value=1234, label="Seed")
+                    motion_rand_seed = gr.Checkbox(value=True, label="Randomize Seed")
+                    
+            with gr.Column(scale=3):
+                with gr.Tabs():
+                    with gr.Tab("Motion Visualization"):
+                        motion_html = gr.HTML(label="Visualization")
+                    with gr.Tab("Files"):
+                        motion_file = gr.File(label="Download FBX")
+                
+        # Motion Event Wiring
+        motion_rewrite_btn.click(
+            ui_rewrite,
+            inputs=[motion_input],
+            outputs=[motion_rewritten, motion_duration]
+        )
+        
+        motion_gen_btn.click(
+            ui_generate_motion,
+            inputs=[motion_input, motion_rewritten, motion_duration, motion_cfg, motion_seed, motion_rand_seed],
+            outputs=[motion_html, motion_file, motion_seed]
         )
 
     return demo
