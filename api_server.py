@@ -46,6 +46,8 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from mmgp import offload
+from hymotion.utils.t2m_runtime import T2MRuntime
+import torch
 
 # --- Monkeypatch for hy3dgen compatibility ---
 import huggingface_hub
@@ -273,7 +275,8 @@ class ModelWorker:
                  subfolder='hunyuan3d-dit-v2-mini-turbo',
                  device='cuda',
                  enable_tex=False,
-                 enable_t23d=False):
+                 enable_t23d=False,
+                 enable_motion=True):
         self.model_path = model_path
         self.device = device
         self.mv_mode = '2mv' in model_path or 'mv' in model_path.lower()
@@ -331,6 +334,47 @@ class ModelWorker:
         self.floater_remove_worker = FloaterRemover()
         self.degenerate_face_remove_worker = DegenerateFaceRemover()
         self.face_reduce_worker = FaceReducer()
+
+        # Initialize Motion Generation Runtime
+        self.enable_motion = enable_motion
+        self.motion_runtime = None
+        if self.enable_motion:
+            try:
+                # Assume standard layout where HY-Motion-1.0 is a sibling directory
+                motion_config = "../HY-Motion-1.0/ckpts/tencent/HY-Motion-1.0-Lite/config.yml"
+                motion_ckpt = "../HY-Motion-1.0/ckpts/tencent/HY-Motion-1.0-Lite/latest.ckpt"
+                
+                if not os.path.exists(motion_config):
+                    # Fallback to local check if copied
+                    motion_config = "ckpts/tencent/HY-Motion-1.0-Lite/config.yml"
+                    motion_ckpt = "ckpts/tencent/HY-Motion-1.0-Lite/latest.ckpt"
+
+                if os.path.exists(motion_config):
+                    logger.info(f"Loading Motion Runtime from {motion_config}...")
+                    # Ensure quantization is set default to int4 for memory efficiency
+                    if "QWEN_QUANTIZATION" not in os.environ:
+                        os.environ["QWEN_QUANTIZATION"] = "int4"
+                        
+                    
+                    disable_pe_env = os.environ.get("DISABLE_PROMPT_ENGINEERING", "False").lower() == "true"
+                    prompt_model_path_env = os.environ.get("PROMPT_MODEL_PATH", None)
+
+                    self.motion_runtime = T2MRuntime(
+                        config_path=motion_config,
+                        ckpt_name=motion_ckpt,
+                        device_ids=[0] if device=="cuda" else None, # Assuming single GPU
+                        disable_prompt_engineering=disable_pe_env,
+                        prompt_engineering_model_path=prompt_model_path_env
+                    )
+                    logger.info("Motion Runtime initialized.")
+                else:
+                    logger.warning(f"Motion checkpoints not found at {motion_config}. Motion generation disabled.")
+                    self.enable_motion = False
+            except Exception as e:
+                logger.error(f"Failed to load Motion Runtime: {e}")
+                import traceback
+                traceback.print_exc()
+                self.enable_motion = False
 
     def get_queue_length(self):
         # Placeholder for semaphore usage if needed
@@ -437,6 +481,41 @@ class ModelWorker:
         main_image = image['front'] if self.mv_mode else image
         return save_path, uid, mesh, main_image
 
+    def generate_motion(self, uid, params):
+        if not self.enable_motion or not self.motion_runtime:
+             raise RuntimeError("Motion generation disabled")
+        
+        logger.info(f"Worker.generate_motion: Job {uid}")
+        text = params.get("text", "")
+        duration = float(params.get("duration", 3.0)) # Default 3s
+        seed = str(params.get("seed", random.randint(0, 1000000)))
+        
+        # Use existing save dir relative to CWD if easier, or formatted absolute path
+        save_dir = os.path.abspath(SAVE_DIR)
+        
+        try:
+            # seeds_csv expects string like "123, 456"
+            html, fbx_files, raw_output = self.motion_runtime.generate_motion(
+                text=text,
+                seeds_csv=str(seed),
+                duration=duration,
+                cfg_scale=params.get("cfg_scale", 7.5),
+                output_format="fbx",
+                output_dir=save_dir,
+                output_filename=f"{uid}_motion",
+                use_special_game_feat=False
+            )
+            
+            if fbx_files:
+                # fbx_files is a list of absolute paths
+                return fbx_files[0] 
+            return None
+        except Exception as e:
+            logger.error(f"Motion Generation Failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
+
 # --- FastAPI App & Auth ---
 
 app = FastAPI()
@@ -507,6 +586,33 @@ async def status_api(uid: str):
         with open(save_file_path, 'rb') as f:
             base64_str = base64.b64encode(f.read()).decode()
         return JSONResponse({'status': 'completed', 'model_base64': base64_str}, status_code=200)
+
+@app.post("/generate_motion", dependencies=[Depends(check_auth)])
+async def generate_motion_endpoint(request: Request):
+    logger.info("API: Generate Motion Request Received")
+    params = await request.json()
+    uid = params.get("uid", str(uuid.uuid4()))
+    
+    if not worker.enable_motion:
+        raise HTTPException(status_code=500, detail="Motion generation is disabled on this server.")
+
+    try:
+        loop = asyncio.get_event_loop()
+        # Run in executor to avoid blocking main thread
+        result_path = await loop.run_in_executor(None, worker.generate_motion, uid, params)
+        
+        if result_path and os.path.exists(result_path):
+             with open(result_path, 'rb') as f:
+                 data = base64.b64encode(f.read()).decode()
+             
+             return JSONResponse({"status": "completed", "result_path": result_path, "model_base64": data})
+        else:
+             return JSONResponse({"status": "failed", "error": "No output generated"}, status_code=500)
+
+    except Exception as e:
+        logger.error(f"Error during motion generation: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Gradio UI ---
 
@@ -712,12 +818,26 @@ if __name__ == "__main__":
     parser.add_argument('--cache-path', type=str, default='gradio_cache')
     parser.add_argument('--profile', type=str, default="3", help="Offload profile (1-4). Default 3 (Balanced).")
     parser.add_argument('--verbose', type=str, default="1", help="Verbose level for offloading.")
+    parser.add_argument('--disable-motion', action='store_true', help="Disable motion generation features.")
+    parser.add_argument("--quantize-text-encoder", type=str, default="int4", choices=["int4", "int8", "none"], help="Quantization level for text encoder (int4, int8, none)")
+    parser.add_argument("--disable-prompt-engineering", action="store_true", help="Disable prompt rewriting (saves VRAM)")
+    parser.add_argument("--prompt-cpu-mode", action="store_true", help="Run prompt rewriter on CPU")
+    parser.add_argument("--prompt-model-path", type=str, default="Qwen/Qwen3-8B", help="Path to prompt rewriter model")
     args = parser.parse_args()
 
     # Apply Turbo defaults if needed
     if args.turbo:
         if "turbo" not in args.subfolder:
             args.subfolder += "-turbo"
+
+    # Set Environment Variables for HY-Motion
+    os.environ["QWEN_QUANTIZATION"] = args.quantize_text_encoder
+    if args.disable_prompt_engineering:
+        os.environ["DISABLE_PROMPT_ENGINEERING"] = "True"
+    if args.prompt_cpu_mode:
+        os.environ["PROMPT_CPU_MODE"] = "true"
+    if args.prompt_model_path:
+        os.environ["PROMPT_MODEL_PATH"] = args.prompt_model_path
 
     logger.info(f"Starting server with args: {args}")
 
@@ -737,7 +857,8 @@ if __name__ == "__main__":
         subfolder=args.subfolder,
         device=args.device,
         enable_tex=True if not args.turbo else args.enable_tex, # Default enable tex for non-turbo? Configurable.
-        enable_t23d=args.enable_t23d
+        enable_t23d=args.enable_t23d,
+        enable_motion=not args.disable_motion
     )
 
     # --- MMGP Profile Offloading ---
@@ -757,6 +878,12 @@ if __name__ == "__main__":
             
         if worker.has_t2i:
             pipe.update(offload.extract_models("t2i_worker", worker.pipeline_t2i))
+
+        if worker.enable_motion and worker.motion_runtime:
+            # T2MRuntime.extract_models_for_mmgp returns a dict of models already.
+            # We prefix it with 'motion_worker' for clarity in mmgp logs.
+            motion_models = worker.motion_runtime.extract_models_for_mmgp()
+            pipe.update(offload.extract_models("motion_worker", motion_models))
             
         if profile < 5:
             kwargs["pinnedMemory"] = "i23d_worker/model"
