@@ -4,7 +4,7 @@ ninja
 pybind11
 huggingface_hub==0.34.0
 
-diffusers==0.31.0
+diffusers==0.26.3
 einops
 opencv-python
 torch==2.9.1
@@ -29,7 +29,7 @@ xatlas
 #facexlib
 
 # Training
-accelerate==0.33.0
+accelerate==0.30.1
 #pytorch_lightning
 #scikit-learn
 #scikit-image
@@ -56,5 +56,7 @@ scipy>=1.10.0
 fbxsdkpy==2020.1.post2
 urllib3<1.27,>=1.25.4
 gradio==3.50.2
+# mmgp and quantization (requires specific optimum-quanto version)
+optimum-quanto==0.2.7
 mmgp==3.2.7
 requests
