@@ -14,13 +14,7 @@ from transformers import (
     CLIPTokenizer,
 )
 
-# Register qwen3 as qwen2 architecture to fix loading error
-try:
-    AutoConfig.register("qwen3", Qwen2Config)
-    if "qwen3" not in AutoModelForCausalLM._model_mapping:
-        AutoModelForCausalLM.register(Qwen2Config, Qwen2ForCausalLM)
-except Exception as e:
-    print(f"Warning: Failed to register qwen3 model type: {e}")
+
 
 
 from ...utils.type_converter import get_module_device

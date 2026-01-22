@@ -1,62 +1,50 @@
 --extra-index-url https://gitlab.inria.fr/api/v4/projects/18692/packages/pypi/simple
-# gradio_litmodel3d
-ninja
-pybind11
-huggingface_hub==0.34.0
 
-diffusers==0.26.3
-einops
-opencv-python
+# Core Deep Learning
 torch==2.9.1
 torchvision==0.24.1
 torchaudio==2.9.1
-transformers==4.57.6
-safetensors==0.5.3
-#taming-transformers-rom1504
-#ConfigArgParse
-#ipdb
-omegaconf
-#diso
-#sentencepiece
-tqdm
+numpy>=1.24.0,<2.0
+accelerate==0.30.1
 
-# Mesh Processing
+# Hugging Face Stack
+huggingface_hub==0.34.0
+transformers==4.57.6
+diffusers==0.26.3
+safetensors==0.5.3
+
+# Server & UI
+fastapi
+uvicorn
+gradio==3.50.2
+requests
+urllib3<1.27,>=1.25.4
+
+# API Server / 3D Pipelines Dependencies
+einops
+tqdm
+omegaconf
+PyYAML==6.0
+Pillow
+opencv-python
+rembg
+onnxruntime
+
+# Mesh & Texture Processing
 trimesh
 pymeshlab
 pygltflib
 xatlas
-#kornia
-#facexlib
 
-# Training
-accelerate==0.30.1
-#pytorch_lightning
-#scikit-learn
-#scikit-image
-numpy>=1.24.0,<2.0
-
-# Demo only
-gradio==3.50.2
-uvicorn
-fastapi
-
-rembg
-onnxruntime
-#gevent
-#geventhttpclient
-pydantic==2.10.6
-peft>=0.17.0
-# HY-Motion Dependencies
+# HY-Motion Specific
 bitsandbytes>=0.48.2
 transforms3d==0.4.2
 torchdiffeq==0.2.5
-PyYAML==6.0
-openai
-scipy>=1.10.0
 fbxsdkpy==2020.1.post2
-urllib3<1.27,>=1.25.4
-gradio==3.50.2
-# mmgp and quantization (requires specific optimum-quanto version)
-optimum-quanto==0.2.7
-mmgp==3.2.7
-requests
+scipy>=1.10.0
+openai
+peft>=0.17.0
+
+# Build/Utils
+ninja
+pybind11

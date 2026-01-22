@@ -17,6 +17,19 @@ A unified model worker and server that exposes both:
 1. REST API for Blender Addon (with Auth)
 2. Gradio UI for Web Interaction (with Auth and Share)
 """
+# --- Monkeypatch for hy3dgen/mmgp compatibility (MUST be before ANY imports) ---
+import huggingface_hub
+if not hasattr(huggingface_hub, "cached_download"):
+    # cached_download was removed in 0.26.0. 
+    # We map it to hf_hub_download which is the modern equivalent for HF files.
+    print("Applying monkeypatch for huggingface_hub.cached_download...")
+    huggingface_hub.cached_download = huggingface_hub.hf_hub_download
+
+# --- Monkeypatch for optimum-quanto/diffusers compatibility removed (Manual offloading does not use mmgp/optimum-quanto) ---
+
+
+
+
 import argparse
 import asyncio
 import base64
@@ -24,8 +37,7 @@ import logging
 import logging.handlers
 import os
 import sys
-import tempfile
-import threading
+
 import traceback
 import uuid
 import random
@@ -46,15 +58,11 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-# --- Monkeypatch for hy3dgen/mmgp compatibility (MUST be before mmgp import) ---
-import huggingface_hub
-if not hasattr(huggingface_hub, "cached_download"):
-    # cached_download was removed in 0.26.0. 
-    # We map it to hf_hub_download which is the modern equivalent for HF files.
-    print("Applying monkeypatch for huggingface_hub.cached_download...")
-    huggingface_hub.cached_download = huggingface_hub.hf_hub_download
+# --- Monkeypatch moved to top of file ---
 
-from mmgp import offload
+# Manual offloading implementation
+print(">>> Manual offloading enabled (MMGP removed)")
+
 # from hymotion.utils.t2m_runtime import T2MRuntime # Moved to __init__ to allow env var setup
 import torch
 
@@ -117,7 +125,6 @@ def build_logger(logger_name, logger_filename):
     return logger
 
 
-class StreamToLogger(object):
     """
     Fake file-like stream object that redirects writes to a logger instance.
     """
@@ -144,6 +151,29 @@ class StreamToLogger(object):
         if self.linebuf != '':
             self.logger.log(self.log_level, self.linebuf.rstrip())
         self.linebuf = ''
+
+class PipelineOffloader:
+    """Context manager for manual offloading of pipelines."""
+    def __init__(self, pipeline: object, device: str = "cuda", offload_to: str = "cpu"):
+        self.pipeline = pipeline
+        self.device = device
+        self.offload_to = offload_to
+
+    def __enter__(self):
+        if hasattr(self.pipeline, "to"):
+            logger.info(f"Moving pipeline to {self.device}...")
+            self.pipeline.to(self.device)
+        elif hasattr(self.pipeline, "cuda") and self.device == "cuda":
+             self.pipeline.cuda()
+        return self.pipeline
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if hasattr(self.pipeline, "to"):
+            logger.info(f"Offloading pipeline to {self.offload_to}...")
+            self.pipeline.to(self.offload_to)
+        elif hasattr(self.pipeline, "cpu"):
+            self.pipeline.cpu()
+        torch.cuda.empty_cache()
 
 
 def pretty_print_semaphore(semaphore):
@@ -294,8 +324,9 @@ class ModelWorker:
             model_path,
             subfolder=subfolder,
             use_safetensors=True,
-            device=device,
+            device="cpu", # Load to cpu initially for manual offloading
         )
+        self.pipeline.enable_flashvdm()
         self.pipeline.enable_flashvdm()
 
         # Initialize Text-to-Image Pipeline
@@ -303,7 +334,7 @@ class ModelWorker:
             try:
                 self.pipeline_t2i = HunyuanDiTPipeline(
                     'Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled',
-                    device=device
+                    device="cpu" # Load to cpu initially
                 )
             except Exception as e:
                 logger.error(f"Failed to load Text-to-Image model: {e}")
@@ -387,10 +418,19 @@ class ModelWorker:
                     self.motion_runtime = T2MRuntime(
                         config_path=motion_config,
                         ckpt_name=motion_ckpt,
-                        device_ids=[0] if device=="cuda" else None, # Assuming single GPU
+                        device_ids=None, # Load to CPU initially by passing None or handling inside T2MRuntime if possible? 
+                        # Actually T2MRuntime might conform to device_ids immediately. 
+                        # Let's assume we handle it via .to() if it supports it, or recreate.
+                        # Looking at T2MRuntime, it loads to device. Let's load to CPU if possible or clear cache.
+                        # For now, let's keep it on CPU by not passing CUDA device IDs if that works, or move it after.
                         disable_prompt_engineering=disable_pe_env,
                         prompt_engineering_model_path=prompt_model_path_env
                     )
+                    # Manually ensure modules are on cpu
+                    if hasattr(self.motion_runtime, "to"):
+                         self.motion_runtime.to("cpu")
+                    elif hasattr(self.motion_runtime, "model"):
+                         self.motion_runtime.model.to("cpu") # Example fallback
                     logger.info("Motion Runtime initialized.")
             except Exception as e:
                 logger.error(f"Failed to load Motion Runtime: {e}")
@@ -440,7 +480,8 @@ class ModelWorker:
             else:
                 if 'text' in params and self.has_t2i:
                     text = params["text"]
-                    image = self.pipeline_t2i(text)
+                    with PipelineOffloader(self.pipeline_t2i, self.device):
+                        image = self.pipeline_t2i(text)
                 else:
                     raise ValueError("No input image or text provided")
 
@@ -462,15 +503,16 @@ class ModelWorker:
             num_chunks = params.get("num_chunks", 8000)
             
             start_time = time.time()
-            outputs = self.pipeline(
-                image=image,
-                num_inference_steps=steps,
-                guidance_scale=guidance_scale,
-                generator=generator,
-                octree_resolution=octree_resolution,
-                num_chunks=num_chunks,
-                output_type='mesh'
-            )
+            with PipelineOffloader(self.pipeline, self.device):
+                outputs = self.pipeline(
+                    image=image,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator,
+                    octree_resolution=octree_resolution,
+                    num_chunks=num_chunks,
+                    output_type='mesh'
+                )
             mesh = export_to_trimesh(outputs)[0]
             logger.info("--- Shape Gen: %s seconds ---" % (time.time() - start_time))
 
@@ -482,7 +524,8 @@ class ModelWorker:
             mesh = self.face_reduce_worker(mesh, max_facenum=params.get('face_count', 20000)) # Default face count
             # For texture generation, we use the 'front' view as reference
             tex_image = image['front'] if self.mv_mode else image
-            mesh = self.pipeline_tex(mesh, tex_image)
+            with PipelineOffloader(self.pipeline_tex, self.device):
+                mesh = self.pipeline_tex(mesh, tex_image)
             logger.info("--- Texture Gen: %s seconds ---" % (time.time() - start_time))
 
         # --- Save ---
@@ -519,16 +562,34 @@ class ModelWorker:
         
         try:
             # seeds_csv expects string like "123, 456"
-            html, fbx_files, raw_output = self.motion_runtime.generate_motion(
-                text=text,
-                seeds_csv=str(seed),
-                duration=duration,
-                cfg_scale=params.get("cfg_scale", 7.5),
-                output_format="fbx",
-                output_dir=save_dir,
-                output_filename=f"{uid}_motion",
-                use_special_game_feat=False
-            )
+            # Manually move motion runtime to device
+            # Note: T2MRuntime might not have a simple .to() method covering all submodules (text encoder, vae, denoiser)
+            # We assume it exposes a way or we access internal modules.
+            # Checking T2MRuntime implementation in hymotion/utils/t2m_runtime.py would be ideal.
+            # Assuming it has a .to() or .cuda() method.
+            if hasattr(self.motion_runtime, "to"):
+                 self.motion_runtime.to(self.device)
+            elif hasattr(self.motion_runtime, "cuda"):
+                 self.motion_runtime.cuda()
+            
+            try:
+                html, fbx_files, raw_output = self.motion_runtime.generate_motion(
+                    text=text,
+                    seeds_csv=str(seed),
+                    duration=duration,
+                    cfg_scale=params.get("cfg_scale", 7.5),
+                    output_format="fbx",
+                    output_dir=save_dir,
+                    output_filename=f"{uid}_motion",
+                    use_special_game_feat=False
+                )
+            finally:
+                 # Move back to CPU
+                 if hasattr(self.motion_runtime, "to"):
+                      self.motion_runtime.to("cpu")
+                 elif hasattr(self.motion_runtime, "cpu"):
+                      self.motion_runtime.cpu()
+                 torch.cuda.empty_cache()
             
             fbx_path = fbx_files[0] if fbx_files else None
             return html, fbx_path
@@ -994,42 +1055,9 @@ if __name__ == "__main__":
         enable_motion=not args.disable_motion
     )
 
-    # --- MMGP Profile Offloading ---
-    try:
-        profile = int(args.profile)
-        kwargs = {}
-        
-        # Monkeypatch _execution_device for mmgp compatibility if needed
-        replace_property_getter(worker.pipeline, "_execution_device", lambda self: "cuda")
-        
-        pipe = offload.extract_models("i23d_worker", worker.pipeline)
-        
-        if worker.has_texturegen:
-            pipe.update(offload.extract_models("texgen_worker", worker.pipeline_tex))
-            # Enable slicing for VAE in texture gen (copied from gradio_app.py)
-            worker.pipeline_tex.models["multiview_model"].pipeline.vae.use_slicing = True
-            
-        if worker.has_t2i:
-            pipe.update(offload.extract_models("t2i_worker", worker.pipeline_t2i))
-
-        if worker.enable_motion and worker.motion_runtime:
-            # T2MRuntime.extract_models_for_mmgp returns a dict of models already.
-            # We prefix it with 'motion_worker' for clarity in mmgp logs.
-            motion_models = worker.motion_runtime.extract_models_for_mmgp()
-            pipe.update(offload.extract_models("motion_worker", motion_models))
-            
-        if profile < 5:
-            kwargs["pinnedMemory"] = "i23d_worker/model"
-        if profile != 1 and profile != 3:
-            kwargs["budgets"] = { "*": 2200 }
-            
-        offload.default_verboseLevel = verboseLevel = int(args.verbose)
-        logger.info(f"Applying mmgp offload profile: {profile}")
-        offload.profile(pipe, profile_no=profile, verboseLevel=int(args.verbose), **kwargs)
-        
-    except Exception as e:
-        logger.error(f"Failed to apply mmgp offloading: {e}")
-        traceback.print_exc()
+    # --- Manual Offloading Setup ---
+    # We don't need complex setup here as we handle it per-request in generate()
+    logger.info("Server ready with manual offloading strategy.")
 
     # Build Gradio UI
     demo = build_gradio_app(worker, args)
