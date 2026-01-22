@@ -34,12 +34,19 @@ class HunyuanDiTPipeline:
         device='cuda'
     ):
         self.device = device
-        self.pipe = AutoPipelineForText2Image.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            enable_pag=True,
-            pag_applied_layers=["blocks.(16|17|18|19)"]
-        ).to(self.device)
+        try:
+            self.pipe = AutoPipelineForText2Image.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+                enable_pag=True,
+                pag_applied_layers=["blocks.(16|17|18|19)"]
+            ).to(self.device)
+        except TypeError:
+             print("PAG not supported by current diffusers version. Fallback to standard pipeline.")
+             self.pipe = AutoPipelineForText2Image.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+            ).to(self.device)
         
         # Ensure all text encoders are on the same device to avoid device mismatch errors
         if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:

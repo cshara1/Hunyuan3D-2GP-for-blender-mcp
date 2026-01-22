@@ -76,7 +76,7 @@ class MCSurfaceExtractor(SurfaceExtractor):
         return vertices, faces
 
 import time
-from mmgp import offload
+
 
 class clock:
     def __init__(self):
@@ -120,9 +120,9 @@ class DMCSurfaceExtractor(SurfaceExtractor):
         faces = faces.detach().cpu().numpy()[:, ::-1]
 
         cl.stop()
-        if offload.default_verboseLevel > 1:
-            print(f"Diso device: {device}")
-            print(f"Diso generation time: {cl.format_time_gap()}")
+        # if offload.default_verboseLevel > 1:
+        #     print(f"Diso device: {device}")
+        #     print(f"Diso generation time: {cl.format_time_gap()}")
 
         return vertices, faces
 

@@ -80,6 +80,38 @@ MAX_SEED = 1e7
 server_error_msg = "**NETWORK ERROR DUE TO HIGH TRAFFIC. PLEASE REGENERATE OR REFRESH THIS PAGE.**"
 moderation_msg = "YOUR INPUT VIOLATES OUR CONTENT MODERATION GUIDELINES. PLEASE TRY AGAIN."
 
+
+
+
+class StreamToLogger(object):
+    """
+    Fake file-like stream object that redirects writes to a logger instance.
+    """
+
+    def __init__(self, logger, log_level=logging.INFO):
+        self.terminal = sys.stdout
+        self.logger = logger
+        self.log_level = log_level
+        self.linebuf = ''
+
+    def __getattr__(self, attr):
+        return getattr(self.terminal, attr)
+
+    def write(self, buf):
+        temp_linebuf = self.linebuf + buf
+        self.linebuf = ''
+        for line in temp_linebuf.splitlines(True):
+            if line[-1] == '\n':
+                self.logger.log(self.log_level, line.rstrip())
+            else:
+                self.linebuf += line
+
+    def flush(self):
+        if self.linebuf != '':
+            self.logger.log(self.log_level, self.linebuf.rstrip())
+        self.linebuf = ''
+
+
 handler = None
 
 def build_logger(logger_name, logger_filename):
@@ -125,33 +157,6 @@ def build_logger(logger_name, logger_filename):
     return logger
 
 
-    """
-    Fake file-like stream object that redirects writes to a logger instance.
-    """
-
-    def __init__(self, logger, log_level=logging.INFO):
-        self.terminal = sys.stdout
-        self.logger = logger
-        self.log_level = log_level
-        self.linebuf = ''
-
-    def __getattr__(self, attr):
-        return getattr(self.terminal, attr)
-
-    def write(self, buf):
-        temp_linebuf = self.linebuf + buf
-        self.linebuf = ''
-        for line in temp_linebuf.splitlines(True):
-            if line[-1] == '\n':
-                self.logger.log(self.log_level, line.rstrip())
-            else:
-                self.linebuf += line
-
-    def flush(self):
-        if self.linebuf != '':
-            self.logger.log(self.log_level, self.linebuf.rstrip())
-        self.linebuf = ''
-
 class PipelineOffloader:
     """Context manager for manual offloading of pipelines."""
     def __init__(self, pipeline: object, device: str = "cuda", offload_to: str = "cpu"):
@@ -160,19 +165,52 @@ class PipelineOffloader:
         self.offload_to = offload_to
 
     def __enter__(self):
-        if hasattr(self.pipeline, "to"):
-            logger.info(f"Moving pipeline to {self.device}...")
-            self.pipeline.to(self.device)
-        elif hasattr(self.pipeline, "cuda") and self.device == "cuda":
-             self.pipeline.cuda()
+        self._move_pipeline(self.device)
         return self.pipeline
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self._move_pipeline(self.offload_to)
+        if self.offload_to == "cpu":
+            torch.cuda.empty_cache()
+
+    def _move_pipeline(self, target_device):
+        msg = f"Moving pipeline {type(self.pipeline).__name__} to {target_device}..."
+        logger.info(msg)
+        # Force print to original stdout/stderr to ensure visibility
+        try:
+            sys.__stdout__.write(f"DEBUG: {msg}\n")
+            sys.__stdout__.flush()
+        except:
+            pass
+        
+        # Standard Diffusers / PyTorch Modules with .to()
         if hasattr(self.pipeline, "to"):
-            logger.info(f"Offloading pipeline to {self.offload_to}...")
-            self.pipeline.to(self.offload_to)
-        elif hasattr(self.pipeline, "cpu"):
-            self.pipeline.cpu()
+            self.pipeline.to(target_device)
+        
+        # Wrapped pipelines (e.g. HunyuanDiTPipeline which holds .pipe)
+        elif hasattr(self.pipeline, "pipe") and hasattr(self.pipeline.pipe, "to"):
+            self.pipeline.pipe.to(target_device)
+            # Also handle text encoders explicitly if needed
+            if hasattr(self.pipeline.pipe, "text_encoder") and self.pipeline.pipe.text_encoder:
+                 self.pipeline.pipe.text_encoder.to(target_device)
+            if hasattr(self.pipeline.pipe, "text_encoder_2") and self.pipeline.pipe.text_encoder_2:
+                 self.pipeline.pipe.text_encoder_2.to(target_device)
+        
+        # Texture Generation Pipeline (holds .models dict)
+        elif hasattr(self.pipeline, "models") and isinstance(self.pipeline.models, dict):
+             for name, model in self.pipeline.models.items():
+                 if hasattr(model, "to"):
+                     model.to(target_device)
+                 elif hasattr(model, "model") and hasattr(model.model, "to"):
+                     model.model.to(target_device)
+        
+        # Fallback using .cuda() / .cpu() if available
+        elif target_device == "cuda" and hasattr(self.pipeline, "cuda"):
+             self.pipeline.cuda()
+        elif target_device == "cpu" and hasattr(self.pipeline, "cpu"):
+             self.pipeline.cpu()
+        else:
+             logger.warning(f"Pipeline {type(self.pipeline)} does not support manual offloading (no .to() method found).")
         torch.cuda.empty_cache()
 
 
@@ -346,11 +384,16 @@ class ModelWorker:
                 # Pre-download models to debug potentially masked errors in hy3dgen
                 import huggingface_hub
                 logger.info(f"Pre-downloading texture models from {tex_model_path}...")
-                huggingface_hub.snapshot_download(repo_id=tex_model_path, allow_patterns=["hunyuan3d-delight-v2-0/*"])
-                huggingface_hub.snapshot_download(repo_id=tex_model_path, allow_patterns=["hunyuan3d-paint-v2-0/*"])
-                logger.info("Texture models pre-downloaded successfully.")
                 
-                self.pipeline_tex = Hunyuan3DPaintPipeline.from_pretrained(tex_model_path)
+                # Retrieve snapshot path explicitly
+                snapshot_path = huggingface_hub.snapshot_download(
+                    repo_id=tex_model_path, 
+                    allow_patterns=["hunyuan3d-delight-v2-0/*", "hunyuan3d-paint-v2-0/*"]
+                )
+                logger.info(f"Texture models pre-downloaded to: {snapshot_path}")
+                
+                # Pass the absolute path to bypass internal weak resolution logic
+                self.pipeline_tex = Hunyuan3DPaintPipeline.from_pretrained(snapshot_path)
                 
                 # Manual CUDA Migration for Texture Pipeline
                 # Manual CUDA Migration for Texture Pipeline logic removed in favor of mmgp.offload
@@ -763,21 +806,27 @@ def build_gradio_app(worker, args):
         
         # Handle Inputs
         # Handle Inputs
+        # Handle Inputs (Common for both MV and Standard modes)
+        if image is not None:
+            if isinstance(image, str):
+                image = Image.open(image).convert("RGBA")
+            params["image"] = image
+        elif caption and caption.strip():
+            if not worker.has_t2i:
+                    raise gr.Error("Text-to-3D is disabled. Please provide an image or restart with --enable_t23d.")
+            params["text"] = caption
+        
+        # MV Specific Extras
         if MV_MODE:
-            # Not fully implemented in this unified script version yet for MV inputs mapping
-            # But let's support single image/text flow primarily for now as base
-             pass
-        else:
-            if image is not None:
-                if isinstance(image, str):
-                    image = Image.open(image).convert("RGBA")
-                params["image"] = image
-            elif caption and caption.strip():
-                if not worker.has_t2i:
-                     raise gr.Error("Text-to-3D is disabled. Please provide an image or restart with --enable_t23d.")
-                params["text"] = caption
-            else:
-                 raise gr.Error("Please provide an Input Image or Text Prompt.")
+            # Map extra views if present (if exposed in UI)
+            if mv_front is not None: params["image_front"] = mv_front
+            if mv_back is not None: params["image_back"] = mv_back
+            if mv_left is not None: params["image_left"] = mv_left
+            if mv_right is not None: params["image_right"] = mv_right
+
+        # Validation
+        if 'image' not in params and 'text' not in params and not any(k.startswith('image_') for k in params):
+                raise gr.Error("Please provide an Input Image or Text Prompt.")
         
         # Call Worker
         try:

@@ -49,6 +49,11 @@ class Hunyuan3DTexGenConfig:
 class Hunyuan3DPaintPipeline:
     @classmethod
     def from_pretrained(cls, model_path):
+        if os.path.exists(model_path):
+            delight_model_path = os.path.join(model_path, 'hunyuan3d-delight-v2-0')
+            multiview_model_path = os.path.join(model_path, 'hunyuan3d-paint-v2-0')
+            return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path))
+
         original_model_path = model_path
         if not os.path.exists(model_path):
             # try local path
