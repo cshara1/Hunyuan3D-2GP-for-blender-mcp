@@ -179,13 +179,19 @@ class PipelineOffloader:
         # Force print to original stdout/stderr to ensure visibility
         try:
             sys.__stdout__.write(f"DEBUG: {msg}\n")
+            if hasattr(self.pipeline, "device"):
+                 old_dev = getattr(self.pipeline, "device", "unknown")
+                 sys.__stdout__.write(f"DEBUG: Before update, pipeline.device={old_dev}\n")
             sys.__stdout__.flush()
         except:
             pass
         
         # Standard Diffusers / PyTorch Modules with .to()
         if hasattr(self.pipeline, "to"):
-            self.pipeline.to(target_device)
+            try:
+                self.pipeline.to(target_device)
+            except Exception as e:
+                sys.__stdout__.write(f"DEBUG: Failed to call .to(): {e}\n")
         
         # Wrapped pipelines (e.g. HunyuanDiTPipeline which holds .pipe)
         elif hasattr(self.pipeline, "pipe") and hasattr(self.pipeline.pipe, "to"):
@@ -211,6 +217,17 @@ class PipelineOffloader:
              self.pipeline.cpu()
         else:
              logger.warning(f"Pipeline {type(self.pipeline)} does not support manual offloading (no .to() method found).")
+        
+        # Try to update .device attribute to keep metadata consistent
+        if hasattr(self.pipeline, "device"):
+             try:
+                 # Check if it's a property we can set
+                 if not isinstance(getattr(type(self.pipeline), 'device', None), property):
+                     self.pipeline.device = target_device
+                     sys.__stdout__.write(f"DEBUG: Updated pipeline.device to {target_device}\n")
+             except Exception as e:
+                 sys.__stdout__.write(f"DEBUG: Failed to update .device attribute: {e}\n")
+                 
         torch.cuda.empty_cache()
 
 
