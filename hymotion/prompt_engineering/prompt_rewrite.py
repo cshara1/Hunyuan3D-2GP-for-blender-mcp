@@ -246,11 +246,17 @@ class ResponseParser:
 
 class PromptRewriter:
     def __init__(
-        self, host: Optional[str] = None, model_path: Optional[str] = None, parser: Optional[ResponseParser] = None
+        self, 
+        host: Optional[str] = None, 
+        model_path: Optional[str] = None, 
+        parser: Optional[ResponseParser] = None,
+        lazy_load: bool = False
     ):
         self.parser = parser or ResponseParser()
         self.logger = logging.getLogger(__name__)
         self.host = host
+        self.lazy_load = lazy_load
+        
         if host:
             self.api = OpenAIChatApi(
                 ApiConfig(
@@ -265,7 +271,8 @@ class PromptRewriter:
             self.model_path = model_path or "./ckpts/Text2MotionPrompter"
             self.tokenizer = None
             self.model = None
-            self._load_model()
+            if not self.lazy_load:
+                self._load_model()
 
     def _load_model(self):
         if self.model is None:
@@ -305,6 +312,13 @@ class PromptRewriter:
             
             self.model.eval()
 
+    def to(self, device):
+        if self.model is None and not self.host:
+             self._load_model()
+             
+        if self.model:
+            self.model.to(device)
+
     def rewrite_prompt_and_infer_time(
         self,
         text: str,
@@ -324,6 +338,9 @@ class PromptRewriter:
                 self.logger.error(f"Prompt rewriting failed: {e}")
                 raise
         else:
+            if self.model is None:
+                self._load_model()
+                
             messages = [{"role": "user", "content": prompt_format.format(text)}]
             full_prompt = self.tokenizer.apply_chat_template(
                 messages,

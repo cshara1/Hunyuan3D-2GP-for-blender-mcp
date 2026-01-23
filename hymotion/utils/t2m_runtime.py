@@ -51,6 +51,7 @@ class T2MRuntime:
         disable_prompt_engineering: bool = False,
         prompt_engineering_host: Optional[str] = None,
         prompt_engineering_model_path: Optional[str] = None,
+        lazy_load: bool = False,
     ):
         self.config_path = config_path
         self.ckpt_name = ckpt_name
@@ -59,6 +60,7 @@ class T2MRuntime:
         self.prompt_engineering_model_path = prompt_engineering_model_path
         self.disable_prompt_engineering = disable_prompt_engineering
         self.skip_model_loading = skip_model_loading
+        self.lazy_load = lazy_load
         self.local_ip = _get_local_ip()
 
         if force_cpu:
@@ -79,12 +81,16 @@ class T2MRuntime:
             self.prompt_rewriter = None
         else:
             self.prompt_rewriter = PromptRewriter(
-                host=self.prompt_engineering_host, model_path=self.prompt_engineering_model_path
+                host=self.prompt_engineering_host, 
+                model_path=self.prompt_engineering_model_path,
+                lazy_load=lazy_load
             )
         # Skip model loading if checkpoint not found
         if self.skip_model_loading:
             print(">>> [WARNING] Checkpoint not found, will use randomly initialized model weights")
-        self.load()
+            
+        if not self.lazy_load:
+            self.load()
         self.fbx_available = FBX_AVAILABLE
         if self.fbx_available:
             try:
@@ -164,6 +170,19 @@ class T2MRuntime:
                 reserved = torch.cuda.memory_reserved(i) / 1024**3
                 total = torch.cuda.get_device_properties(i).total_memory / 1024**3
                 print(f">>> [{stage}] GPU {i}: {allocated:.2f}GB allocated / {total:.2f}GB total ({allocated/total*100:.1f}%)")
+
+    def to(self, device):
+        if not self._loaded:
+             self.load()
+
+        # Move all pipelines
+        for pipeline in self.pipelines:
+            if hasattr(pipeline, "to"):
+                pipeline.to(device)
+        
+        # Move prompt rewriter if it exists
+        if self.prompt_rewriter and hasattr(self.prompt_rewriter, "to"):
+            self.prompt_rewriter.to(device)
 
     def extract_models_for_mmgp(self):
         """Expose internal models for MMGP offloading."""

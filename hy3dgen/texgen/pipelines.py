@@ -101,6 +101,18 @@ class Hunyuan3DPaintPipeline:
         self.models['multiview_model'] = Multiview_Diffusion_Net(self.config)
         # self.models['super_model'] = Image_Super_Net(self.config)
 
+    def to(self, device):
+        print(f"DEBUG: Hunyuan3DPaintPipeline.to({device}) called")
+        if self.render:
+            print(f"DEBUG: Moving render to {device}")
+            self.render.to(device)
+        for name, model in self.models.items():
+            if hasattr(model, 'to'):
+                print(f"DEBUG: Moving model {name} to {device}")
+                model.to(device)
+            else:
+                 print(f"DEBUG: Model {name} has no .to() method")
+
     def enable_model_cpu_offload(self, gpu_id: Optional[int] = None, device: Union[torch.device, str] = "cuda"):
         self.models['delight_model'].pipeline.enable_model_cpu_offload(gpu_id=gpu_id, device=device)
         self.models['multiview_model'].pipeline.enable_model_cpu_offload(gpu_id=gpu_id, device=device)

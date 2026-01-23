@@ -187,14 +187,17 @@ class PipelineOffloader:
             pass
         
         # Standard Diffusers / PyTorch Modules with .to()
+        # Standard Diffusers / PyTorch Modules with .to()
         if hasattr(self.pipeline, "to"):
             try:
+                logger.info(f"DEBUG: Calling .to({target_device}) on pipeline root")
                 self.pipeline.to(target_device)
             except Exception as e:
-                sys.__stdout__.write(f"DEBUG: Failed to call .to(): {e}\n")
+                logger.error(f"DEBUG: Failed to call .to(): {e}")
         
         # Wrapped pipelines (e.g. HunyuanDiTPipeline which holds .pipe)
         elif hasattr(self.pipeline, "pipe") and hasattr(self.pipeline.pipe, "to"):
+            logger.info(f"DEBUG: Calling .pipe.to({target_device})")
             self.pipeline.pipe.to(target_device)
             # Also handle text encoders explicitly if needed
             if hasattr(self.pipeline.pipe, "text_encoder") and self.pipeline.pipe.text_encoder:
@@ -204,11 +207,17 @@ class PipelineOffloader:
         
         # Texture Generation Pipeline (holds .models dict)
         elif hasattr(self.pipeline, "models") and isinstance(self.pipeline.models, dict):
+             logger.info(f"DEBUG: Iterating .models dict for {type(self.pipeline).__name__}")
              for name, model in self.pipeline.models.items():
+                 logger.info(f"DEBUG: Checking model {name} (type: {type(model).__name__})...")
                  if hasattr(model, "to"):
+                     logger.info(f"DEBUG: Calling .to({target_device}) on {name}")
                      model.to(target_device)
                  elif hasattr(model, "model") and hasattr(model.model, "to"):
+                     logger.info(f"DEBUG: Calling .model.to({target_device}) on {name}")
                      model.model.to(target_device)
+                 else:
+                     logger.warning(f"DEBUG: No .to() method found for {name}")
         
         # Fallback using .cuda() / .cpu() if available
         elif target_device == "cuda" and hasattr(self.pipeline, "cuda"):
@@ -224,9 +233,9 @@ class PipelineOffloader:
                  # Check if it's a property we can set
                  if not isinstance(getattr(type(self.pipeline), 'device', None), property):
                      self.pipeline.device = target_device
-                     sys.__stdout__.write(f"DEBUG: Updated pipeline.device to {target_device}\n")
+                     logger.info(f"DEBUG: Updated pipeline.device to {target_device}")
              except Exception as e:
-                 sys.__stdout__.write(f"DEBUG: Failed to update .device attribute: {e}\n")
+                 logger.error(f"DEBUG: Failed to update .device attribute: {e}")
                  
         torch.cuda.empty_cache()
 
@@ -478,19 +487,15 @@ class ModelWorker:
                     self.motion_runtime = T2MRuntime(
                         config_path=motion_config,
                         ckpt_name=motion_ckpt,
-                        device_ids=None, # Load to CPU initially by passing None or handling inside T2MRuntime if possible? 
+                        device_ids=[], # Initialize on CPU
                         # Actually T2MRuntime might conform to device_ids immediately. 
                         # Let's assume we handle it via .to() if it supports it, or recreate.
                         # Looking at T2MRuntime, it loads to device. Let's load to CPU if possible or clear cache.
                         # For now, let's keep it on CPU by not passing CUDA device IDs if that works, or move it after.
                         disable_prompt_engineering=disable_pe_env,
-                        prompt_engineering_model_path=prompt_model_path_env
+                        prompt_engineering_model_path=prompt_model_path_env,
+                        lazy_load=True # Enable lazy loading to save RAM/VRAM at startup
                     )
-                    # Manually ensure modules are on cpu
-                    if hasattr(self.motion_runtime, "to"):
-                         self.motion_runtime.to("cpu")
-                    elif hasattr(self.motion_runtime, "model"):
-                         self.motion_runtime.model.to("cpu") # Example fallback
                     logger.info("Motion Runtime initialized.")
             except Exception as e:
                 logger.error(f"Failed to load Motion Runtime: {e}")
@@ -524,7 +529,8 @@ class ModelWorker:
                  # Fallback to T2I if no image provided and T2I is enabled
                  if 'text' in params and self.has_t2i:
                     text = params["text"]
-                    image_dict['front'] = self.pipeline_t2i(text)
+                    with PipelineOffloader(self.pipeline_t2i, self.device):
+                        image_dict['front'] = self.pipeline_t2i(text)
                  else:
                     raise ValueError("No input image or text provided for MV mode")
             
@@ -622,17 +628,8 @@ class ModelWorker:
         
         try:
             # seeds_csv expects string like "123, 456"
-            # Manually move motion runtime to device
-            # Note: T2MRuntime might not have a simple .to() method covering all submodules (text encoder, vae, denoiser)
-            # We assume it exposes a way or we access internal modules.
-            # Checking T2MRuntime implementation in hymotion/utils/t2m_runtime.py would be ideal.
-            # Assuming it has a .to() or .cuda() method.
-            if hasattr(self.motion_runtime, "to"):
-                 self.motion_runtime.to(self.device)
-            elif hasattr(self.motion_runtime, "cuda"):
-                 self.motion_runtime.cuda()
-            
-            try:
+            # Use PipelineOffloader for motion generation
+            with PipelineOffloader(self.motion_runtime, self.device):
                 html, fbx_files, raw_output = self.motion_runtime.generate_motion(
                     text=text,
                     seeds_csv=str(seed),
@@ -643,13 +640,6 @@ class ModelWorker:
                     output_filename=f"{uid}_motion",
                     use_special_game_feat=False
                 )
-            finally:
-                 # Move back to CPU
-                 if hasattr(self.motion_runtime, "to"):
-                      self.motion_runtime.to("cpu")
-                 elif hasattr(self.motion_runtime, "cpu"):
-                      self.motion_runtime.cpu()
-                 torch.cuda.empty_cache()
             
             fbx_path = fbx_files[0] if fbx_files else None
             return html, fbx_path
@@ -672,7 +662,8 @@ class ModelWorker:
              if not self.motion_runtime.prompt_rewriter:
                   return text, 5.0
              
-             pred_duration, rewritten = self.motion_runtime.rewrite_text_and_infer_time(text)
+             with PipelineOffloader(self.motion_runtime, self.device):
+                 pred_duration, rewritten = self.motion_runtime.rewrite_text_and_infer_time(text)
              return rewritten, pred_duration
         except Exception as e:
              logger.error(f"Rewrite failed: {e}")

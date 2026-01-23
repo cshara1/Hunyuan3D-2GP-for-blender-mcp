@@ -40,6 +40,10 @@ class Multiview_Diffusion_Net():
         pipeline.set_progress_bar_config(disable=True)
         self.pipeline = pipeline #.to(self.device) # only for cosmetics and not display the warning 
 
+    def to(self, device):
+        self.device = device
+        self.pipeline.to(device)
+
     def seed_everything(self, seed):
         random.seed(seed)
         np.random.seed(seed)

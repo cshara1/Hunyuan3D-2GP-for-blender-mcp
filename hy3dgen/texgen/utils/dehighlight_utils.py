@@ -36,6 +36,10 @@ class Light_Shadow_Remover():
         # self.pipeline = pipeline.to(self.device, torch.float16)
         self.pipeline = pipeline # Needed to avoid displaying the warning
         
+    def to(self, device):
+        self.device = device
+        self.pipeline.to(device)
+        
     def recorrect_rgb(self, src_image, target_image, alpha_channel, scale=0.95):
         
         def flat_and_mask(bgr, a):

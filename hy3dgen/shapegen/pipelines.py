@@ -699,7 +699,7 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
 
-        device =  torch.device("cuda")  #self.device
+        device = self.device
         self.set_surface_extractor(mc_algo)
 
         # device = self.device
