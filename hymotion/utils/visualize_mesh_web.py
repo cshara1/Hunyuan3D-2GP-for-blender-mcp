@@ -216,10 +216,14 @@ def save_visualization_data(
 def get_cached_captions(folder_name: str, file_name: str) -> List[dict]:
     """read _meta.json to get text"""
 
-    folder_name = sanitize_folder_name(folder_name)
-    file_name = sanitize_filename(file_name)
+    if os.path.isabs(folder_name) and os.path.exists(folder_name):
+        base_dir = folder_name
+        file_name = sanitize_filename(file_name)
+    else:
+        folder_name = sanitize_folder_name(folder_name)
+        file_name = sanitize_filename(file_name)
+        base_dir = get_output_dir(folder_name)
 
-    base_dir = get_output_dir(folder_name)
     # try to add suffix or find
     meta_path = safe_path_join(base_dir, f"{file_name}_meta.json")
 
@@ -261,10 +265,13 @@ def get_cached_smpl_frames(folder_name: str, file_name: str) -> List[list]:
     1. if file_name is the base name, load all samples
     2. if file_name is a specific sample name, only load that sample
     """
-    folder_name = sanitize_folder_name(folder_name)
-    file_name = sanitize_filename(file_name)
-
-    base_dir = get_output_dir(folder_name)
+    if os.path.isabs(folder_name) and os.path.exists(folder_name):
+        base_dir = folder_name
+        file_name = sanitize_filename(file_name)
+    else:
+        folder_name = sanitize_folder_name(folder_name)
+        file_name = sanitize_filename(file_name)
+        base_dir = get_output_dir(folder_name)
 
     npz_direct_path = safe_path_join(base_dir, f"{file_name}.npz")
     meta_path = safe_path_join(base_dir, f"{file_name}_meta.json")

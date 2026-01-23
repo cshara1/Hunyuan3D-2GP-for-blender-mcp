@@ -1156,6 +1156,7 @@ if __name__ == "__main__":
         print("!"*80)
 
         # Launch Gradio with prevent_thread_lock=True to allow us to attach routes
+        demo.queue(concurrency_count=1, max_size=10) # Enable queueing to handle long requests
         _, _, shared_url = demo.launch(
             share=True, 
             auth=gradio_auth, 

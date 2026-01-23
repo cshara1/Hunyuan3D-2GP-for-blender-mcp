@@ -322,6 +322,22 @@ class PromptRewriter:
             except Exception as e:
                 self.logger.warning(f"Failed to move PromptRewriter model to {device}: {e}")
 
+    def unload(self):
+        """Unload model to free memory."""
+        if self.model is not None:
+             del self.model
+             self.model = None
+        if self.tokenizer is not None:
+             del self.tokenizer
+             self.tokenizer = None
+        
+        # Clear CUDA cache if using GPU
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        import gc
+        gc.collect()
+
     def rewrite_prompt_and_infer_time(
         self,
         text: str,

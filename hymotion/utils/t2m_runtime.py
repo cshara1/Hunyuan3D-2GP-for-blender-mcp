@@ -172,6 +172,11 @@ class T2MRuntime:
                 print(f">>> [{stage}] GPU {i}: {allocated:.2f}GB allocated / {total:.2f}GB total ({allocated/total*100:.1f}%)")
 
     def to(self, device):
+        if str(device) == "cpu":
+             print(">>> Offloading T2MRuntime to CPU: Unloading models to save RAM.")
+             self.unload()
+             return
+
         if not self._loaded:
              self.load()
 
@@ -183,6 +188,22 @@ class T2MRuntime:
         # Move prompt rewriter if it exists
         if self.prompt_rewriter and hasattr(self.prompt_rewriter, "to"):
             self.prompt_rewriter.to(device)
+
+    def unload(self):
+        """Unload models to free memory (RAM + VRAM)."""
+        # Clear pipelines
+        self.pipelines = []
+        self._gpu_load = []
+        if self.prompt_rewriter:
+             self.prompt_rewriter.unload()
+        
+        self._loaded = False
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+        print(">>> T2MRuntime unloaded.")
 
     def extract_models_for_mmgp(self):
         """Expose internal models for MMGP offloading."""
