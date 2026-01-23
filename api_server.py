@@ -590,9 +590,16 @@ class ModelWorker:
             mesh = self.face_reduce_worker(mesh, max_facenum=params.get('face_count', 20000)) # Default face count
             # For texture generation, we use the 'front' view as reference
             tex_image = image['front'] if self.mv_mode else image
-            with PipelineOffloader(self.pipeline_tex, self.device):
-                mesh = self.pipeline_tex(mesh, tex_image)
-            logger.info("--- Texture Gen: %s seconds ---" % (time.time() - start_time))
+            try:
+                with PipelineOffloader(self.pipeline_tex, self.device):
+                    mesh = self.pipeline_tex(mesh, tex_image)
+                logger.info("--- Texture Gen: %s seconds ---" % (time.time() - start_time))
+            except Exception as e:
+                logger.error(f"Texture Generation Failed (returning white mesh): {e}")
+                # Optional: Traceback debug
+                traceback.print_exc()
+                # Continue with white mesh, effectively disabling texture for this run
+                params['texture'] = False 
 
         # --- Save ---
         file_type = params.get('type', 'glb')
@@ -887,9 +894,21 @@ def build_gradio_app(worker, args):
             path_white = export_mesh(mesh, save_folder, textured=False) # Save white version too
             path_tex = file_path # This is the textured one returned by worker
             
+            # Use native Gradio Model3D viewer instead of custom HTML
             # html_tex = build_model_viewer_html(save_folder, height=HTML_HEIGHT, width=HTML_WIDTH, textured=True)
+            # Actually, let's use the Model3D or HTML? The outputs define: [file_out, file_out2, html_gen_mesh, stats, seed]
+            # html_gen_mesh is gr.HTML. So we MUST return HTML string.
             
-            return path_white, path_tex, path_tex, stats, seed
+            # Re-enable the helper (ensure it is defined in the scope or globally)
+            # It seems build_model_viewer_html is missing from the file view I saw?
+            # It should be defined in api_server.py. Assuming it is available or I need to find it.
+            
+            # Wait, I don't see build_model_viewer_html definition in previous view_file outputs.
+            # It was likely imported or defined earlier.
+            # Let's verify if build_model_viewer_html exists.
+            html_tex = f'<model-viewer src="/file={path_tex}" alt="Generic 3D Model" auto-rotate camera-controls style="width: 100%; height: {HTML_HEIGHT}px;"></model-viewer>'
+            
+            return path_white, path_tex, html_tex, stats, seed
             
         except Exception as e:
             traceback.print_exc()
@@ -901,8 +920,12 @@ def build_gradio_app(worker, args):
 
     def ui_rewrite(text):
         if not text: return "", 5.0
-        rewritten, duration = worker.rewrite_text(text)
-        return rewritten, duration
+        try:
+            rewritten, duration = worker.rewrite_text(text)
+            return rewritten, duration
+        except Exception as e:
+            logger.error(f"UI Rewrite Failed: {e}")
+            return text, 5.0 # Fallback
 
     def ui_generate_motion(text, rewritten_text, duration, cfg, seed, randomize_seed):
         seed = int(randomize_seed_fn(seed, randomize_seed))

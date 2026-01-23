@@ -317,7 +317,10 @@ class PromptRewriter:
              self._load_model()
              
         if self.model:
-            self.model.to(device)
+            try:
+                self.model.to(device)
+            except Exception as e:
+                self.logger.warning(f"Failed to move PromptRewriter model to {device}: {e}")
 
     def rewrite_prompt_and_infer_time(
         self,
