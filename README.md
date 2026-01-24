@@ -11,6 +11,18 @@ The `api_server.py` has been updated for seamless integration with [blender-mcp]
 - `--auth-user`: Authentication username (default: None)
 - `--auth-pass`: Authentication password (default: None)
 
+### Memory Strategy Configuration
+Options to balance memory usage and performance.
+
+| Mode            | Arguments        | Hunyuan3D (Shape/Tex)       | HY-Motion (Motion) | Recommended Environment                               |
+| :-------------- | :--------------- | :-------------------------- | :----------------- | :---------------------------------------------------- |
+| **Default**     | (None)           | **Auto Unload (Lazy Load)** | **CPU Offload**    | **16GB VRAM / 32GB RAM** (Avoid OOM, Stability)       |
+| **Fast Switch** | `--no_switching` | **Keep in RAM**             | **CPU Offload**    | **64GB+ RAM** (Faster switching between Shape/Motion) |
+| **Max Speed**   | `--no_offload`   | **Keep on GPU**             | **Keep on GPU**    | **48GB+ VRAM** (or Multi-GPU)                         |
+
+- `--no_offload`: Disables offloading to CPU, keeping models constantly on GPU (High VRAM usage).
+- `--no_switching`: Disables unloading Hunyuan3D models when generating motion, keeping them in RAM (High RAM usage).
+
 ### How to run the API server
 ```bash
 python api_server.py --share --auth-user auth --auth-pass pass --enable_t23d --enable_tex

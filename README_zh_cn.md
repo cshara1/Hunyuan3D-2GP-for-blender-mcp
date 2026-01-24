@@ -11,6 +11,18 @@
 - `--auth-user`: 认证用户名 (默认: None)
 - `--auth-pass`: 认证密码 (默认: None)
 
+### 显存策略设置 (Memory Strategy)
+用于平衡显存/内存使用与性能的选项。
+
+| 模式 (Mode)                | 参数 (Arguments) | Hunyuan3D (形状/纹理)        | HY-Motion (动作)             | 推荐环境 (Recommended)                          |
+| :------------------------- | :--------------- | :--------------------------- | :--------------------------- | :---------------------------------------------- |
+| **默认 (Default)**         | (无)             | **自动卸载 (Lazy Load)**     | **CPU 卸载**                 | **16GB VRAM / 32GB RAM** (避免 OOM，稳定性优先) |
+| **快速切换 (Fast Switch)** | `--no_switching` | **保留在内存 (Keep in RAM)** | **CPU 卸载**                 | **64GB+ RAM** (加快形状与动作生成间的切换)      |
+| **极速模式 (Max Speed)**   | `--no_offload`   | **保留在显存 (Keep on GPU)** | **保留在显存 (Keep on GPU)** | **48GB+ VRAM** (或多卡环境)                     |
+
+- `--no_offload`: 禁用 CPU 卸载，模型将常驻 GPU（高显存占用）。
+- `--no_switching`: 禁用动作生成时的 Hunyuan3D 模型卸载，将其保留在内存中（高内存占用）。
+
 ### 如何运行 API 服务器
 ```bash
 python api_server.py --share --auth-user auth --auth-pass pass --enable_t23d --enable_tex

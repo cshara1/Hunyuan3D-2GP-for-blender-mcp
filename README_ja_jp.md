@@ -11,6 +11,18 @@
 - `--auth-user`: 認証ユーザー名 (デフォルト: None)
 - `--auth-pass`: 認証パスワード (デフォルト: None)
 
+### メモリストラテジー設定 (Memory Strategy)
+メモリ使用量とパフォーマンスのバランスを調整するためのオプションです。
+
+| モード (Mode)                  | 引数 (Arguments) | Hunyuan3D (形状/テクスチャ)    | HY-Motion (モーション)    | 推奨環境 (Recommended)                          |
+| :----------------------------- | :--------------- | :----------------------------- | :------------------------ | :---------------------------------------------- |
+| **デフォルト (Default)**       | (なし)           | **自動アンロード (Lazy Load)** | **CPUオフロード**         | **16GB VRAM / 32GB RAM** (OOM回避・安定性重視)  |
+| **高速スイッチ (Fast Switch)** | `--no_switching` | **RAM保持 (Keep in RAM)**      | **CPUオフロード**         | **64GB+ RAM** (形状⇔モーションの切り替え高速化) |
+| **最高速 (Max Speed)**         | `--no_offload`   | **GPU保持 (Keep on GPU)**      | **GPU保持 (Keep on GPU)** | **48GB+ VRAM** (またはMulti-GPU)                |
+
+- `--no_offload`: CPUへのオフロードを無効化し、モデルを常にGPU上に保持します（VRAM消費大）。
+- `--no_switching`: モーション生成時のHunyuan3Dモデルのアンロード（破棄）を無効化し、RAM上に保持します（RAM消費大）。
+
 ### API サーバーの実行方法
 ```bash
 python api_server.py --share --auth-user auth --auth-pass pass --enable_t23d --enable_tex
