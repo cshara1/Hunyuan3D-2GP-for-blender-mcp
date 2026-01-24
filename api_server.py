@@ -377,6 +377,8 @@ class ModelWorker:
                  no_offload=False,
                  no_switching=False):
         self.model_path = model_path
+        self.tex_model_path = tex_model_path
+        self.subfolder = subfolder
         self.device = device
         self.enable_offload = not no_offload
         self.enable_switching = not no_switching
@@ -385,6 +387,7 @@ class ModelWorker:
             logger.info("Multi-view mode detected for Shape Generation.")
         self.has_texturegen = enable_tex
         self.has_t2i = enable_t23d
+        self.enable_motion = enable_motion 
         
         logger.info(f"Loading the model {model_path} on device {device} ...")
 
@@ -440,70 +443,45 @@ class ModelWorker:
             try:
                 # Pre-download models to debug potentially masked errors in hy3dgen
                 import huggingface_hub
-                # logger.info(f"Pre-downloading texture models from {self.tex_model_path}...") # self.tex_model_path not stored in init args? 
-                # Note: tex_model_path was local arg in init, need to store it if we want to use it here.
-                # Assuming standard path or relying on cache.
-                pass 
+                # Check directly if we can load it
+                logger.info(f"Loading Texture Generation Pipeline from {self.tex_model_path}...")
                 
-                # We need to handle the fact that tex_model_path was passed to init but not saved to self.
-                # Let's assume standard path or 'tencent/Hunyuan3D-2' default if we didn't save it.
-                # Ideally config or saved arg.
-                
-                # NOTE: For simplicity in this refactor, we assume the model is already in cache or we'd need to store tex_model_path in __init__.
-                # Re-using the logic from original __init__ but without the snapshot download arg which was local.
-                
-                # To fail safe, let's just try loading. user logs showed it worked.
-                # But wait, in the original code snapshot_path was used.
-                # We should store tex_model_path in __init__ to be safe.
-                pass 
-
-                # Re-implementing simplified load:
-                # We need to find the snapshot path again if we want to be robust, or just let from_pretrained handle it.
-                # from_pretrained usually handles repo_id.
-                
-                # Let's use the explicit logic if possible, but we need the path.
-                # Storing tex_model_path in __init__ first.
-                
-            except Exception:
-                pass 
-        
-        # ACTUALLY, I should modify __init__ to store these paths first. 
-        # But wait, looking at the ReplacementContent above, I am replacing a huge chunk.
-        # I should make sure I have access to tex_model_path. 
-        # I will inject `self.tex_model_path = tex_model_path` in implicit context if possible, 
-        # or I relies on `load_hunyuan3d` having access to it? No it's a method.
-        # I must fix __init__ to store `self.tex_model_path`.
-        
-        # Okay, let's step back and do this in two passes or be very careful.
-        # I'll include the storage in __init__ in this replacement.
+                self.pipeline_tex = Hunyuan3DPaintPipeline.from_pretrained(
+                    self.tex_model_path,
+                    device="cpu" # Load to cpu initially
+                )
+            except Exception as e:
+                logger.error(f"Failed to load Texture Generation model: {e}")
+                self.has_texturegen = False
+                # Optional: self.pipeline_tex = None (already None)
 
     def unload_hunyuan3d(self):
         """Unload Hunyuan3D pipelines to free RAM."""
-        if not self.enable_switching:
+        if self.enable_switching:
+            if self.pipeline is not None:
+                logger.info("Unloading Hunyuan3D pipelines to free RAM...")
+                del self.pipeline
+                self.pipeline = None
+                
+                if self.pipeline_t2i:
+                    del self.pipeline_t2i
+                    self.pipeline_t2i = None
+                
+                if self.pipeline_tex:
+                    del self.pipeline_tex
+                    self.pipeline_tex = None
+                
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                logger.info("Hunyuan3D pipelines unloaded.")
+        else:
              logger.info("Switching disabled: Skipping Hunyuan3D unload.")
-             return
-
-        if self.pipeline is not None:
-            logger.info("Unloading Hunyuan3D pipelines to free RAM...")
-            del self.pipeline
-            self.pipeline = None
-            
-            if self.pipeline_t2i:
-                del self.pipeline_t2i
-                self.pipeline_t2i = None
-            
-            if self.pipeline_tex:
-                del self.pipeline_tex
-                self.pipeline_tex = None
-            
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            logger.info("Hunyuan3D pipelines unloaded.")
 
         # Initialize Motion Generation Runtime
-        self.enable_motion = enable_motion
+        # self.enable_motion is already set in __init__
+        
         self.motion_runtime = None
         self.motion_init_error = None
         
@@ -538,7 +516,7 @@ class ModelWorker:
                      msg = f"Motion checkpoints not found.\nChecked paths:\n" + "\n".join(checked_paths) + "\nPlease ensure 'config.yml' exists in one of these locations."
                      logger.warning(msg)
                      self.motion_init_error = msg
-                     self.enable_motion = False
+                     self.enable_motion = False # Disable if not found
 
                 if self.enable_motion and motion_config:
                     logger.info(f"Loading Motion Runtime from {motion_config}...")
@@ -546,7 +524,6 @@ class ModelWorker:
                     if "QWEN_QUANTIZATION" not in os.environ:
                         os.environ["QWEN_QUANTIZATION"] = "int4"
                         
-                    
                     disable_pe_env = os.environ.get("DISABLE_PROMPT_ENGINEERING", "False").lower() == "true"
                     prompt_model_path_env = os.environ.get("PROMPT_MODEL_PATH", None)
 
@@ -555,10 +532,6 @@ class ModelWorker:
                         config_path=motion_config,
                         ckpt_name=motion_ckpt,
                         device_ids=[], # Initialize on CPU
-                        # Actually T2MRuntime might conform to device_ids immediately. 
-                        # Let's assume we handle it via .to() if it supports it, or recreate.
-                        # Looking at T2MRuntime, it loads to device. Let's load to CPU if possible or clear cache.
-                        # For now, let's keep it on CPU by not passing CUDA device IDs if that works, or move it after.
                         disable_prompt_engineering=disable_pe_env,
                         prompt_engineering_model_path=prompt_model_path_env,
                         lazy_load=True # Enable lazy loading to save RAM/VRAM at startup
@@ -1169,6 +1142,8 @@ if __name__ == "__main__":
     parser.add_argument("--disable-prompt-engineering", action="store_true", help="Disable prompt rewriting (saves VRAM)")
     parser.add_argument("--prompt-cpu-mode", action="store_true", help="Run prompt rewriter on CPU")
     parser.add_argument("--prompt-model-path", type=str, default="Qwen/Qwen3-8B", help="Path to prompt rewriter model")
+    parser.add_argument("--no_offload", action="store_true", help="Disable manual offloading")
+    parser.add_argument("--no_switching", action="store_true", help="Disable automatic model switching")
     args = parser.parse_args()
 
     # Apply Turbo defaults if needed
