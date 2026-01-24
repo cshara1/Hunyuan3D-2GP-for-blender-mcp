@@ -173,10 +173,9 @@ class T2MRuntime:
 
     def to(self, device):
         if str(device) == "cpu":
-             print(">>> Offloading T2MRuntime to CPU: Unloading models to save RAM.")
-             self.unload()
-             return
-
+             print(">>> Offloading T2MRuntime to CPU: Keeping models in RAM.")
+             # We do NOT unload here anymore, because we unloaded Hunyuan3D to make space.
+             
         if not self._loaded:
              self.load()
 
