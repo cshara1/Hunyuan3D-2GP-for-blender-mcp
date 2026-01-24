@@ -448,7 +448,6 @@ class ModelWorker:
                 
                 self.pipeline_tex = Hunyuan3DPaintPipeline.from_pretrained(
                     self.tex_model_path,
-                    device="cpu" # Load to cpu initially
                 )
             except Exception as e:
                 logger.error(f"Failed to load Texture Generation model: {e}")
@@ -626,23 +625,34 @@ class ModelWorker:
             logger.info("--- Shape Gen: %s seconds ---" % (time.time() - start_time))
 
         # --- Post-Processing & Texturing ---
-        if params.get('texture', False) and self.has_texturegen:
-            start_time = time.time()
-            mesh = self.floater_remove_worker(mesh)
-            mesh = self.degenerate_face_remove_worker(mesh)
-            mesh = self.face_reduce_worker(mesh, max_facenum=params.get('face_count', 20000)) # Default face count
-            # For texture generation, we use the 'front' view as reference
-            tex_image = image['front'] if self.mv_mode else image
-            try:
-                with PipelineOffloader(self.pipeline_tex, self.device, enabled=self.enable_offload):
-                    mesh = self.pipeline_tex(mesh, tex_image)
-                logger.info("--- Texture Gen: %s seconds ---" % (time.time() - start_time))
-            except Exception as e:
-                logger.error(f"Texture Generation Failed (returning white mesh): {e}")
-                # Optional: Traceback debug
-                traceback.print_exc()
-                # Continue with white mesh, effectively disabling texture for this run
-                params['texture'] = False 
+        # --- Post-Processing & Texturing ---
+        if params.get('texture', False):
+            if not self.has_texturegen:
+                logger.warning("Texture generation requested but Texture Model is not loaded (has_texturegen=False). Returning white mesh.")
+            else:
+                logger.info("Texture Generation Started...")
+                start_time = time.time()
+                mesh = self.floater_remove_worker(mesh)
+                mesh = self.degenerate_face_remove_worker(mesh)
+                mesh = self.face_reduce_worker(mesh, max_facenum=params.get('face_count', 20000)) # Default face count
+                # For texture generation, we use the 'front' view as reference
+                tex_image = image['front'] if self.mv_mode else image
+                try:
+                    logger.info(f"Running pipeline_tex on device {self.device}...")
+                    if self.pipeline_tex is None:
+                         # Try re-loading if missing? Or just fail.
+                         raise RuntimeError("Pipeline_tex is None despite has_texturegen=True")
+
+                    with PipelineOffloader(self.pipeline_tex, self.device, enabled=self.enable_offload):
+                        mesh = self.pipeline_tex(mesh, tex_image)
+                    logger.info("--- Texture Gen: %s seconds ---" % (time.time() - start_time))
+                except Exception as e:
+                    logger.error(f"Texture Generation Failed (returning white mesh): {e}")
+                    # Optional: Traceback debug
+                    import traceback
+                    traceback.print_exc()
+                    # Continue with white mesh, effectively disabling texture for this run
+                    params['texture'] = False  
 
         # --- Save ---
         file_type = params.get('type', 'glb')
@@ -1128,8 +1138,8 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument('--enable_tex', action='store_true')
-    parser.add_argument('--enable_t23d', action='store_true')
+    parser.add_argument('--enable_tex', action='store_true', help="Enable texture generation")
+    parser.add_argument('--enable_t23d', action='store_true', help="Enable Text-to-3D")
     parser.add_argument('--turbo', action='store_true')
     parser.add_argument('--share', action='store_true', help="Enable Gradio Share Link")
     parser.add_argument('--auth-user', type=str, help="Username for authentication")
